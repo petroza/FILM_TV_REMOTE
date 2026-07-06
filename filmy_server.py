@@ -877,25 +877,30 @@ TV_PAGE = """<!doctype html><html lang="cs"><head>
 <title>FILMY TV</title>
 <style>
 html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:Segoe UI,Arial,sans-serif;cursor:none}
-#tv{position:fixed;inset:0;width:100%;height:100%;background:#000;object-fit:contain}
-#idle{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8a93a6;text-align:center;padding:5vw}
+#tv{position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;background:#000;object-fit:contain}
+#idle{position:fixed;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8a93a6;text-align:center;padding:5vw}
 #idle h1{font-size:4.5vw;color:#e8e8ea;margin:0 0 2vh}
 #idle p{font-size:2.2vw;margin:.4vh 0}
 #cap{margin-top:4vh;font-size:1.9vw;opacity:.75;line-height:1.6}
-#enable{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.88);color:#fff;font-size:3.5vw;text-align:center;z-index:9}
+#enable{position:fixed;top:0;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.88);color:#fff;font-size:3.5vw;text-align:center;z-index:9}
 video::cue{background:rgba(0,0,0,.55);color:#fff;font-size:2.4vw}
-#ctl{position:fixed;inset:0;z-index:5;opacity:0;transition:opacity .3s;pointer-events:none}
+#ctl{position:fixed;top:0;left:0;right:0;bottom:0;z-index:5;opacity:0;transition:opacity .3s;pointer-events:none}
 #ctl.show{opacity:1;pointer-events:auto}
-#ctop{position:absolute;top:0;left:0;right:0;padding:3vh 4vw;background:linear-gradient(180deg,#000c,#0000);color:#fff;font-size:2.6vw;font-weight:700;display:flex;align-items:center;gap:1.5vw}
-#cbot{position:absolute;bottom:0;left:0;right:0;padding:3vh 4vw 4vh;background:linear-gradient(0deg,#000e,#0000)}
-#ctime{display:flex;align-items:center;gap:2vw;color:#fff;font-size:2vw}
-#cprog{flex:1;height:.7vh;background:#ffffff33;border-radius:1vh;overflow:hidden}
-#cfill{height:100%;width:0;background:#e50914}
-#cbar{display:flex;align-items:center;gap:2.5vw;margin-top:2.2vh;color:#fff}
-.cbtn{display:flex;align-items:center;font-size:2vw;background:#ffffff1a;border:.25vw solid #ffffff33;border-radius:1.2vw;padding:1.4vh 2.4vw}
+#ctop{position:absolute;top:0;left:0;right:0;padding:5vh 7vw 3vh;background:linear-gradient(180deg,#000d,#0000);color:#fff;font-size:2.8vw;font-weight:700}
+#cbot{position:absolute;bottom:0;left:0;right:0;padding:4vh 7vw 7vh;background:linear-gradient(0deg,#000f,#0000)}
+#ctime{display:flex;align-items:center;gap:2.5vw;color:#fff;font-size:2.2vw}
+#cprog{position:relative;flex:1;height:1.1vh;background:#ffffff40;border-radius:1vh}
+#cfill{position:absolute;left:0;top:0;height:100%;width:0;background:#e50914;border-radius:1vh}
+#cknob{position:absolute;top:50%;left:0;width:2.6vh;height:2.6vh;margin:-1.3vh 0 0 -1.3vh;border-radius:50%;background:#fff;box-shadow:0 0 1vh #000}
+#cbar{display:flex;align-items:center;gap:2vw;margin-top:2.8vh;color:#fff}
+.cbtn{display:flex;align-items:center;font-size:2vw;background:#ffffff1a;border:.25vw solid #ffffff40;border-radius:1.2vw;padding:1.3vh 2.2vw}
 .cbtn.on{background:#e50914;border-color:#e50914}
-#cpp{font-size:2.6vw}
-#chint{margin-top:2vh;color:#ffffff88;font-size:1.5vw}
+#cpp{font-size:2.4vw}
+#chint{margin-top:2.4vh;color:#ffffffaa;font-size:1.6vw}
+#submenu{position:fixed;top:0;right:0;bottom:0;width:38vw;z-index:8;display:none;flex-direction:column;justify-content:center;gap:.6vh;padding:5vw;background:linear-gradient(90deg,#0000,#000f);color:#fff}
+.smtitle{font-size:2.4vw;font-weight:700;opacity:.7;margin-bottom:1.5vh}
+.smitem{font-size:2.2vw;padding:1.4vh 2vw;border-radius:1vw;opacity:.6}
+.smitem.sel{background:#e50914;opacity:1}
 </style></head><body>
 <video id="tv" playsinline></video>
 <div id="idle">
@@ -904,25 +909,27 @@ video::cue{background:rgba(0,0,0,.55);color:#fff;font-size:2.4vw}
   <div id="cap"></div>
 </div>
 <div id="enable">Stiskni OK / Enter na dalkovem pro spusteni &#9654;</div>
+<div id="submenu"></div>
 <div id="ctl">
-  <div id="ctop"><span>&#9664;</span><span id="ctitle"></span></div>
+  <div id="ctop"><span id="ctitle"></span></div>
   <div id="cbot">
-    <div id="ctime"><span id="cnow">0:00</span><div id="cprog"><div id="cfill"></div></div><span id="cdur">0:00</span></div>
+    <div id="ctime"><span id="cnow">0:00</span><div id="cprog"><div id="cfill"></div><div id="cknob"></div></div><span id="cdur">0:00</span></div>
     <div id="cbar">
       <div class="cbtn" id="bmenu">&#9664; Menu</div>
       <div class="cbtn">&#9194; 10s</div>
       <div class="cbtn on" id="cpp">&#9208;</div>
       <div class="cbtn">10s &#9193;</div>
+      <div class="cbtn" id="bsub">&#128172; Titulky &#9650;</div>
     </div>
-    <div id="chint">&#9664; &#9654; pretaceni &#183; OK play/pauza &#183; Zpet = menu</div>
+    <div id="chint">&#9664;&#9654; pretaceni &#183; OK play/pauza &#183; &#9650; titulky &#183; Zpet = menu</div>
   </div>
 </div>
 <script>
 (function(){
 var v=document.getElementById('tv'),idle=document.getElementById('idle'),enable=document.getElementById('enable');
 var ctl=document.getElementById('ctl'),cpp=document.getElementById('cpp'),ctitle=document.getElementById('ctitle');
-var cnow=document.getElementById('cnow'),cdur=document.getElementById('cdur'),cfill=document.getElementById('cfill');
-var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null;
+var cnow=document.getElementById('cnow'),cdur=document.getElementById('cdur'),cfill=document.getElementById('cfill'),cknob=document.getElementById('cknob'),submenu=document.getElementById('submenu');
+var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null,subsList=[],menuOpen=false,subFocus=-1;
 try{
  var fsOK=!!(document.fullscreenEnabled||document.webkitFullscreenEnabled);
  var t=document.createElement('video');
@@ -937,25 +944,38 @@ function fmt(s){s=Math.floor(s||0);if(!isFinite(s)||s<0)s=0;var h=Math.floor(s/3
 function setTrack(i){var tt=v.textTracks;for(var k=0;k<tt.length;k++){var w=(k===i)?'showing':'hidden';if(tt[k].mode!==w)tt[k].mode=w;}}
 function playing(){return !!v.getAttribute('src') && idle.style.display==='none';}
 function updPP(){cpp.innerHTML=v.paused?'&#9654;':'&#9208;';}
-function showCtl(){if(!playing())return;updPP();updTime();ctl.classList.add('show');if(hideT)clearTimeout(hideT);hideT=setTimeout(function(){ctl.classList.remove('show');},4000);}
-function hideCtl(){ctl.classList.remove('show');if(hideT)clearTimeout(hideT);}
+function showCtl(){if(!playing())return;updPP();updTime();ctl.classList.add('show');if(hideT)clearTimeout(hideT);hideT=setTimeout(function(){if(!menuOpen)ctl.classList.remove('show');},5000);}
+function hideCtl(){if(menuOpen)return;ctl.classList.remove('show');if(hideT)clearTimeout(hideT);}
 function togglePlay(){if(v.paused){v.play();cmd('/cast/cmd?a=resume');}else{v.pause();cmd('/cast/cmd?a=pause');}updPP();}
 function seekBy(d){var t=(v.currentTime||0)+d;if(t<0)t=0;var dd=isFinite(v.duration)?v.duration:1e9;if(t>dd)t=dd;try{v.currentTime=t;}catch(e){}cmd('/cast/cmd?a=seek&t='+Math.floor(t));updTime();}
-function backMenu(){cmd('/cast/cmd?a=stop');hideCtl();}
-function updTime(){var d=isFinite(v.duration)?v.duration:0;cnow.textContent=fmt(v.currentTime);cdur.textContent=fmt(d);cfill.style.width=(d?Math.min(100,(v.currentTime/d)*100):0)+'%';}
+function backMenu(){cmd('/cast/cmd?a=stop');menuOpen=false;submenu.style.display='none';hideCtl();}
+function updTime(){var d=isFinite(v.duration)?v.duration:0;var p=d?Math.min(100,(v.currentTime/d)*100):0;cnow.textContent=fmt(v.currentTime);cdur.textContent=fmt(d);cfill.style.width=p+'%';cknob.style.left=p+'%';}
+function renderSub(){var opts=[{i:-1,l:'Vypnuto'}];for(var j=0;j<subsList.length;j++)opts.push({i:j,l:subsList[j].l});var h='<div class="smtitle">&#128172; Titulky</div>';for(var m=0;m<opts.length;m++){var sel=(opts[m].i===subFocus)?' sel':'';var chk=(opts[m].i===curSub)?' &#10003;':'';h+='<div class="smitem'+sel+'">'+opts[m].l+chk+'</div>';}submenu.innerHTML=h;}
+function openSub(){if(!playing())return;menuOpen=true;subFocus=(curSub>=-1?curSub:-1);renderSub();submenu.style.display='flex';ctl.classList.add('show');if(hideT)clearTimeout(hideT);}
+function moveSub(d){var mx=subsList.length-1;subFocus+=d;if(subFocus<-1)subFocus=-1;if(subFocus>mx)subFocus=mx;renderSub();}
+function applySub(){curSub=subFocus;setTrack(curSub);cmd('/cast/cmd?a=sub&i='+curSub);closeSub();}
+function closeSub(){menuOpen=false;submenu.style.display='none';showCtl();}
 v.addEventListener('play',updPP);v.addEventListener('pause',updPP);
 // titulky drz zapnute i behem prehravani (okamzita obnova, bez bliknuti)
 v.addEventListener('timeupdate',function(){if(v.getAttribute('src')&&curSub>=0)setTrack(curSub);});
 document.getElementById('bmenu').addEventListener('click',function(e){e.stopPropagation();backMenu();});
 cpp.addEventListener('click',function(e){e.stopPropagation();togglePlay();showCtl();});
+document.getElementById('bsub').addEventListener('click',function(e){e.stopPropagation();openSub();});
 document.addEventListener('keydown',function(e){
  if(enable.style.display==='flex'){enableNow();e.preventDefault();return;}
  if(!playing()){goFS();return;}
  var k=e.keyCode;
- if(k===37){seekBy(-10);showCtl();}
- else if(k===39){seekBy(10);showCtl();}
+ if(menuOpen){
+  if(k===38)moveSub(-1);
+  else if(k===40)moveSub(1);
+  else if(k===13||k===32)applySub();
+  else if(k===8||k===27||k===10009||k===461||k===457||k===37||k===39)closeSub();
+  e.preventDefault();return;
+ }
+ if(k===37){showCtl();seekBy(-10);}
+ else if(k===39){showCtl();seekBy(10);}
  else if(k===13||k===32){togglePlay();showCtl();}
- else if(k===38){showCtl();}
+ else if(k===38){openSub();}
  else if(k===40){hideCtl();}
  else if(k===8||k===27||k===10009||k===461||k===457){backMenu();}
  else{showCtl();}
@@ -970,10 +990,10 @@ function poll(){
     curRel=s.rel;
     while(v.firstChild)v.removeChild(v.firstChild);
     if(s.url){
-     v.src=s.url;
-     (s.subs||[]).forEach(function(su){var tr=document.createElement('track');tr.kind='subtitles';tr.srclang='cs';tr.label=su.l;tr.src=su.u;v.appendChild(tr);});
+     v.src=s.url;subsList=s.subs||[];
+     subsList.forEach(function(su){var tr=document.createElement('track');tr.kind='subtitles';tr.srclang='cs';tr.label=su.l;tr.src=su.u;v.appendChild(tr);});
      v.load();idle.style.display='none';ctitle.textContent=s.title||'';tryPlay();goFS();showCtl();
-    }else{v.removeAttribute('src');v.load();idle.style.display='flex';hideCtl();}
+    }else{v.removeAttribute('src');v.load();idle.style.display='flex';subsList=[];menuOpen=false;submenu.style.display='none';hideCtl();}
     curSub=-3;
    }
    if(s.sub!==curSub)curSub=s.sub;
