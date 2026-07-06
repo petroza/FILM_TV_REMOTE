@@ -620,7 +620,8 @@ def _enrich_loop():
 def start_enrichment():
     global _enrich_started
     load_meta()
-    if _enrich_started:
+    # FILMY_OFFLINE=1 -> zadne online dotazy (plakaty/hodnoceni se nestahuji)
+    if _enrich_started or os.environ.get("FILMY_OFFLINE"):
         return
     _enrich_started = True
     threading.Thread(target=_enrich_loop, daemon=True).start()

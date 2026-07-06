@@ -12,6 +12,22 @@ One optional feature (audio-based subtitle sync) needs two extra packages.
 
 ---
 
+## 📸 Screenshots
+
+<p align="center">
+  <img src="screenshots/gallery.png" width="31%" alt="Movie gallery">
+  &nbsp;
+  <img src="screenshots/player.png" width="31%" alt="Player with the subtitle panel">
+</p>
+<p align="center">
+  <img src="screenshots/tv.png" width="64%" alt="Cast-to-TV page (phone as remote)">
+</p>
+
+<sub>Screenshots use <b>demo content</b> — placeholder videos generated locally and
+made-up titles. No third-party posters, artwork or media are shown.</sub>
+
+---
+
 ## ✨ Features
 
 - **📁 Web gallery** of all videos in a folder (recursive), with search.
@@ -74,9 +90,10 @@ Set in `filmy_server.py` (top of the file) or via environment variables:
 
 | Setting        | Env var        | Default        | Meaning                                  |
 |----------------|----------------|----------------|------------------------------------------|
-| `MEDIA_ROOT`   | `FILMY_ROOT`   | `C:\FILMY`     | Folder with your videos (served)         |
-| `PORT`         | `FILMY_PORT`   | `8099`         | HTTP port                                |
-| `OMDB_API_KEY` | `OMDB_API_KEY` | *(empty)*      | Optional extra IMDb-rating source        |
+| `MEDIA_ROOT`   | `FILMY_ROOT`    | `C:\FILMY`    | Folder with your videos (served)          |
+| `PORT`         | `FILMY_PORT`    | `8099`        | HTTP port                                 |
+| `OMDB_API_KEY` | `OMDB_API_KEY`  | *(empty)*     | Optional extra IMDb-rating source         |
+| *(offline)*    | `FILMY_OFFLINE` | *(off)*       | Set to `1` to disable all online lookups (no posters/ratings fetched) |
 
 ---
 
