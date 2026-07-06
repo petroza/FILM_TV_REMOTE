@@ -1015,7 +1015,11 @@ def page_remote_html(rel, sub):
 REMOTE_JS = """
 var dur=0,paused=false,seeking=false;
 function cmd(u){return fetch(u,{cache:'no-store'}).catch(function(){});}
-cmd('/cast/cmd?a=play&f='+encodeURIComponent(REL)+'&sub='+SUB);
+function startPlay(){cmd('/cast/cmd?a=play&f='+encodeURIComponent(REL)+'&sub='+SUB);}
+// pust film jen kdyz na TV jeste nebezi (obnoveni ovladace = jen pripojeni, ne restart)
+fetch('/cast/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
+ if(!s||s.rel!==REL){startPlay();}
+}).catch(startPlay);
 function fmt(s){s=Math.floor(s||0);if(!isFinite(s))s=0;var m=Math.floor(s/60),x=s%60;return m+':'+(x<10?'0':'')+x;}
 function poll(){fetch('/cast/tv',{cache:'no-store'}).then(function(r){return r.json();}).then(function(t){
  dur=t.dur||0;paused=t.paused;
