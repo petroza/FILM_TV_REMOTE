@@ -944,6 +944,8 @@ function seekBy(d){var t=(v.currentTime||0)+d;if(t<0)t=0;var dd=isFinite(v.durat
 function backMenu(){cmd('/cast/cmd?a=stop');hideCtl();}
 function updTime(){var d=isFinite(v.duration)?v.duration:0;cnow.textContent=fmt(v.currentTime);cdur.textContent=fmt(d);cfill.style.width=(d?Math.min(100,(v.currentTime/d)*100):0)+'%';}
 v.addEventListener('play',updPP);v.addEventListener('pause',updPP);
+// titulky drz zapnute i behem prehravani (okamzita obnova, bez bliknuti)
+v.addEventListener('timeupdate',function(){if(v.getAttribute('src')&&curSub>=0)setTrack(curSub);});
 document.getElementById('bmenu').addEventListener('click',function(e){e.stopPropagation();backMenu();});
 cpp.addEventListener('click',function(e){e.stopPropagation();togglePlay();showCtl();});
 document.addEventListener('keydown',function(e){
