@@ -1,0 +1,18 @@
+# Local runtime cache (downloaded posters, IMDb dataset, metadata) - never commit
+cache/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS / editors
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/

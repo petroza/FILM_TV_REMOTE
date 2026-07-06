@@ -1,0 +1,11 @@
+# Core server: NO dependencies (Python standard library only).
+#
+# The lines below are ONLY needed for the optional
+# "sync subtitles to video by audio" feature.
+# Install with:  pip install -r requirements.txt
+#
+# (ffsubsync uses FFmpeg, which static-ffmpeg downloads on demand.
+#  See THIRD_PARTY_NOTICES.md for their licenses.)
+
+ffsubsync
+static-ffmpeg
