@@ -12,6 +12,12 @@ One optional feature (audio-based subtitle sync) needs two extra packages.
 
 ---
 
+## 🔌 How it works
+
+![How it works: the PC serves your movies; the TV plays them in its browser; the phone is the remote — all over your home Wi-Fi](screenshots/how-it-works.png)
+
+---
+
 ## 📸 Screenshots
 
 <p align="center">
