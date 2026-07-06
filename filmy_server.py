@@ -876,14 +876,26 @@ TV_PAGE = """<!doctype html><html lang="cs"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FILMY TV</title>
 <style>
-html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:Segoe UI,Arial,sans-serif}
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:Segoe UI,Arial,sans-serif;cursor:none}
 #tv{position:fixed;inset:0;width:100%;height:100%;background:#000;object-fit:contain}
 #idle{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8a93a6;text-align:center;padding:5vw}
 #idle h1{font-size:4.5vw;color:#e8e8ea;margin:0 0 2vh}
 #idle p{font-size:2.2vw;margin:.4vh 0}
 #cap{margin-top:4vh;font-size:1.9vw;opacity:.75;line-height:1.6}
-#enable{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.88);color:#fff;font-size:3.5vw;text-align:center;z-index:5}
-video::cue{background:rgba(0,0,0,.6);color:#fff;font-size:2.4vw}
+#enable{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.88);color:#fff;font-size:3.5vw;text-align:center;z-index:9}
+video::cue{background:rgba(0,0,0,.55);color:#fff;font-size:2.4vw}
+#ctl{position:fixed;inset:0;z-index:5;opacity:0;transition:opacity .3s;pointer-events:none}
+#ctl.show{opacity:1;pointer-events:auto}
+#ctop{position:absolute;top:0;left:0;right:0;padding:3vh 4vw;background:linear-gradient(180deg,#000c,#0000);color:#fff;font-size:2.6vw;font-weight:700;display:flex;align-items:center;gap:1.5vw}
+#cbot{position:absolute;bottom:0;left:0;right:0;padding:3vh 4vw 4vh;background:linear-gradient(0deg,#000e,#0000)}
+#ctime{display:flex;align-items:center;gap:2vw;color:#fff;font-size:2vw}
+#cprog{flex:1;height:.7vh;background:#ffffff33;border-radius:1vh;overflow:hidden}
+#cfill{height:100%;width:0;background:#e50914}
+#cbar{display:flex;align-items:center;gap:2.5vw;margin-top:2.2vh;color:#fff}
+.cbtn{display:flex;align-items:center;font-size:2vw;background:#ffffff1a;border:.25vw solid #ffffff33;border-radius:1.2vw;padding:1.4vh 2.4vw}
+.cbtn.on{background:#e50914;border-color:#e50914}
+#cpp{font-size:2.6vw}
+#chint{margin-top:2vh;color:#ffffff88;font-size:1.5vw}
 </style></head><body>
 <video id="tv" playsinline></video>
 <div id="idle">
@@ -892,23 +904,62 @@ video::cue{background:rgba(0,0,0,.6);color:#fff;font-size:2.4vw}
   <div id="cap"></div>
 </div>
 <div id="enable">Stiskni OK / Enter na dalkovem pro spusteni &#9654;</div>
+<div id="ctl">
+  <div id="ctop"><span>&#9664;</span><span id="ctitle"></span></div>
+  <div id="cbot">
+    <div id="ctime"><span id="cnow">0:00</span><div id="cprog"><div id="cfill"></div></div><span id="cdur">0:00</span></div>
+    <div id="cbar">
+      <div class="cbtn" id="bmenu">&#9664; Menu</div>
+      <div class="cbtn">&#9194; 10s</div>
+      <div class="cbtn on" id="cpp">&#9208;</div>
+      <div class="cbtn">10s &#9193;</div>
+    </div>
+    <div id="chint">&#9664; &#9654; pretaceni &#183; OK play/pauza &#183; Zpet = menu</div>
+  </div>
+</div>
 <script>
 (function(){
 var v=document.getElementById('tv'),idle=document.getElementById('idle'),enable=document.getElementById('enable');
-var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3;
+var ctl=document.getElementById('ctl'),cpp=document.getElementById('cpp'),ctitle=document.getElementById('ctitle');
+var cnow=document.getElementById('cnow'),cdur=document.getElementById('cdur'),cfill=document.getElementById('cfill');
+var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null;
 try{
  var fsOK=!!(document.fullscreenEnabled||document.webkitFullscreenEnabled);
  var t=document.createElement('video');
- var hevc=t.canPlayType('video/mp4;codecs="hvc1"');
- var h264=t.canPlayType('video/mp4;codecs="avc1.42E01E"');
+ var hevc=t.canPlayType('video/mp4;codecs="hvc1"');var h264=t.canPlayType('video/mp4;codecs="avc1.42E01E"');
  document.getElementById('cap').textContent='Fullscreen: '+(fsOK?'ANO':'NE')+'  |  H.264: '+(h264||'ne')+'  |  HEVC: '+(hevc||'ne');
 }catch(e){}
-function goFS(){var el=document.documentElement;try{(el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el);}catch(e){}}
+function cmd(u){fetch(u,{cache:'no-store'}).catch(function(){});}
+function goFS(){var el=document.documentElement;if(!(document.fullscreenElement||document.webkitFullscreenElement)){try{(el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el);}catch(e){}}}
 function tryPlay(){var p=v.play();if(p&&p.catch){p.catch(function(){enable.style.display='flex';});}}
 function enableNow(){enable.style.display='none';goFS();v.play();}
-document.addEventListener('keydown',function(){if(enable.style.display==='flex')enableNow();else goFS();});
-document.addEventListener('click',function(){if(enable.style.display==='flex')enableNow();else goFS();});
-function setTrack(i){var tt=v.textTracks;for(var k=0;k<tt.length;k++)tt[k].mode=(k===i)?'showing':'hidden';}
+function fmt(s){s=Math.floor(s||0);if(!isFinite(s)||s<0)s=0;var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;return (h?h+':'+(m<10?'0':''):'')+m+':'+(x<10?'0':'')+x;}
+function setTrack(i){var tt=v.textTracks;for(var k=0;k<tt.length;k++){var w=(k===i)?'showing':'hidden';if(tt[k].mode!==w)tt[k].mode=w;}}
+function playing(){return !!v.getAttribute('src') && idle.style.display==='none';}
+function updPP(){cpp.innerHTML=v.paused?'&#9654;':'&#9208;';}
+function showCtl(){if(!playing())return;updPP();updTime();ctl.classList.add('show');if(hideT)clearTimeout(hideT);hideT=setTimeout(function(){ctl.classList.remove('show');},4000);}
+function hideCtl(){ctl.classList.remove('show');if(hideT)clearTimeout(hideT);}
+function togglePlay(){if(v.paused){v.play();cmd('/cast/cmd?a=resume');}else{v.pause();cmd('/cast/cmd?a=pause');}updPP();}
+function seekBy(d){var t=(v.currentTime||0)+d;if(t<0)t=0;var dd=isFinite(v.duration)?v.duration:1e9;if(t>dd)t=dd;try{v.currentTime=t;}catch(e){}cmd('/cast/cmd?a=seek&t='+Math.floor(t));updTime();}
+function backMenu(){cmd('/cast/cmd?a=stop');hideCtl();}
+function updTime(){var d=isFinite(v.duration)?v.duration:0;cnow.textContent=fmt(v.currentTime);cdur.textContent=fmt(d);cfill.style.width=(d?Math.min(100,(v.currentTime/d)*100):0)+'%';}
+v.addEventListener('play',updPP);v.addEventListener('pause',updPP);
+document.getElementById('bmenu').addEventListener('click',function(e){e.stopPropagation();backMenu();});
+cpp.addEventListener('click',function(e){e.stopPropagation();togglePlay();showCtl();});
+document.addEventListener('keydown',function(e){
+ if(enable.style.display==='flex'){enableNow();e.preventDefault();return;}
+ if(!playing()){goFS();return;}
+ var k=e.keyCode;
+ if(k===37){seekBy(-10);showCtl();}
+ else if(k===39){seekBy(10);showCtl();}
+ else if(k===13||k===32){togglePlay();showCtl();}
+ else if(k===38){showCtl();}
+ else if(k===40){hideCtl();}
+ else if(k===8||k===27||k===10009||k===461||k===457){backMenu();}
+ else{showCtl();}
+ if([37,38,39,40,13,32,8,27,10009].indexOf(k)>=0)e.preventDefault();
+});
+document.addEventListener('click',function(){if(enable.style.display==='flex'){enableNow();}else{goFS();showCtl();}});
 function poll(){
  fetch('/cast/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
   if(s.ver!==curVer){
@@ -919,18 +970,21 @@ function poll(){
     if(s.url){
      v.src=s.url;
      (s.subs||[]).forEach(function(su){var tr=document.createElement('track');tr.kind='subtitles';tr.srclang='cs';tr.label=su.l;tr.src=su.u;v.appendChild(tr);});
-     v.load();idle.style.display='none';tryPlay();goFS();
-    }else{v.removeAttribute('src');v.load();idle.style.display='flex';}
+     v.load();idle.style.display='none';ctitle.textContent=s.title||'';tryPlay();goFS();showCtl();
+    }else{v.removeAttribute('src');v.load();idle.style.display='flex';hideCtl();}
     curSub=-3;
    }
-   if(s.sub!==curSub){curSub=s.sub;setTrack(s.sub);}
+   if(s.sub!==curSub)curSub=s.sub;
    if(s.paused&&!v.paused)v.pause();
-   if(!s.paused&&v.paused&&v.src)tryPlay();
+   if(!s.paused&&v.paused&&v.getAttribute('src'))tryPlay();
   }
   if(s.seekVer!==curSeekVer){curSeekVer=s.seekVer;if(isFinite(s.seek)){try{v.currentTime=s.seek;}catch(e){}}}
+  // TITULKY DRZ ZAPNUTE porad (i kdyz je prohlizec resetuje nebo mobil odejde jinam)
+  if(v.getAttribute('src')&&curSub>=-1)setTrack(curSub);
  }).catch(function(){});
 }
 setInterval(poll,1000);poll();
+setInterval(updTime,500);
 setInterval(function(){
  var d=isFinite(v.duration)?Math.floor(v.duration):0;
  fetch('/cast/report?t='+Math.floor(v.currentTime||0)+'&d='+d+'&p='+(v.paused?1:0)+'&rel='+encodeURIComponent(curRel||''),{cache:'no-store'}).catch(function(){});
