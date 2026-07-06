@@ -23,8 +23,10 @@ One optional feature (audio-based subtitle sync) needs two extra packages.
   <img src="screenshots/tv.png" width="64%" alt="Cast-to-TV page (phone as remote)">
 </p>
 
-<sub>Screenshots use <b>demo content</b> — placeholder videos generated locally and
-made-up titles. No third-party posters, artwork or media are shown.</sub>
+<sub>Demo content uses <b>public-domain films</b>; the posters shown come from
+<a href="https://commons.wikimedia.org">Wikimedia Commons</a> under free licenses
+(captured with <code>FILMY_COMMONS_ONLY=1</code>). The video files are locally
+generated placeholders, not the actual films.</sub>
 
 ---
 
@@ -94,6 +96,7 @@ Set in `filmy_server.py` (top of the file) or via environment variables:
 | `PORT`         | `FILMY_PORT`    | `8099`        | HTTP port                                 |
 | `OMDB_API_KEY` | `OMDB_API_KEY`  | *(empty)*     | Optional extra IMDb-rating source         |
 | *(offline)*    | `FILMY_OFFLINE` | *(off)*       | Set to `1` to disable all online lookups (no posters/ratings fetched) |
+| *(free art)*   | `FILMY_COMMONS_ONLY` | *(off)*  | Set to `1` to use only freely-licensed posters (Wikimedia Commons) |
 
 ---
 

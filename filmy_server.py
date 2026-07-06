@@ -267,7 +267,7 @@ def _clean_string(base):
     year, year_pos = "", None
     for m in re.finditer(r"\b(19|20)\d{2}\b", s):
         val = int(m.group(0))
-        if 1920 <= val <= 2027 and m.start() > 0:
+        if 1900 <= val <= 2027 and m.start() > 0:
             year, year_pos = m.group(0), m.start()
     cut = len(s)
     if year_pos is not None:
@@ -442,8 +442,13 @@ def wiki_poster(title, year):
         pages = (d.get("query") or {}).get("pages") or {}
         for p in pages.values():
             img = (p.get("original") or {}).get("source")
-            if img:
-                return img
+            if not img:
+                continue
+            # FILMY_COMMONS_ONLY=1 -> pouzij jen volne licencovane plakaty
+            # (Wikimedia Commons), nikdy fair-use obrazky nahrane lokalne na en.wiki.
+            if os.environ.get("FILMY_COMMONS_ONLY") and "/commons/" not in img:
+                continue
+            return img
     return None
 
 
