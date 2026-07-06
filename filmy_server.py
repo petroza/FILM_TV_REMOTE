@@ -991,6 +991,13 @@ setInterval(function(){
  var d=isFinite(v.duration)?Math.floor(v.duration):0;
  fetch('/cast/report?t='+Math.floor(v.currentTime||0)+'&d='+d+'&p='+(v.paused?1:0)+'&rel='+encodeURIComponent(curRel||''),{cache:'no-store'}).catch(function(){});
 },1500);
+// samo-oprava: kdyz zamrzne stream (vypadek site/serveru), obnov ho a navaz na stejnou pozici
+var _lt=0,_stall=0;
+setInterval(function(){
+ if(!playing()||v.paused){_stall=0;_lt=v.currentTime;return;}
+ if(Math.abs(v.currentTime-_lt)<0.1){_stall++;if(_stall>=6){var pos=v.currentTime;v.load();try{v.currentTime=pos;}catch(e){}tryPlay();_stall=0;}}else{_stall=0;}
+ _lt=v.currentTime;
+},1000);
 })();
 </script></body></html>"""
 
