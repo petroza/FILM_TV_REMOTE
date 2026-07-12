@@ -1160,6 +1160,70 @@ _cast = {"ver": 0, "rel": None, "url": None, "title": "", "subs": [],
 # stav hlaseny z TV zpet (pro ovladac na mobilu)
 _tv = {"time": 0.0, "dur": 0.0, "paused": True, "rel": None}
 
+# --- TRVALE ulozeni "co se hraje" -> prezije restart / pad serveru ---
+# Bez tohoto se po kazdem restartu TV odpojila (stav byl jen v pameti).
+_CAST_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cast_state.json")
+_last_save_t = 0.0
+
+
+def _save_cast():
+    """Ulozi co se hraje + posledni pozici hlasenou z TV, aby se to po restartu vratilo."""
+    try:
+        with _cast_lock:
+            if not _cast.get("rel"):
+                try:
+                    os.remove(_CAST_STATE_FILE)
+                except OSError:
+                    pass
+                return
+            data = {"rel": _cast["rel"], "sub": _cast.get("sub", -1),
+                    "subshift": _cast.get("subshift", 0.0),
+                    "pos": (_tv.get("time") or _cast.get("seek") or 0.0),
+                    "paused": _cast.get("paused", False)}
+        tmp = _CAST_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, _CAST_STATE_FILE)
+    except Exception:
+        pass
+
+
+def _load_cast():
+    """Po startu obnovi film + pozici, at se TV sama vrati tam, kde skoncila."""
+    try:
+        with open(_CAST_STATE_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        return
+    rel = d.get("rel")
+    if not rel:
+        return
+    try:
+        if not (safe_path(rel) and os.path.isfile(safe_path(rel))):
+            return
+    except Exception:
+        return
+    try:
+        subs = find_subtitles(rel)
+    except Exception:
+        subs = []
+    sub = d.get("sub", -1)
+    if not isinstance(sub, int) or sub >= len(subs):
+        sub = -1
+    with _cast_lock:
+        _cast["rel"] = rel
+        _cast["url"] = "/media/" + urllib.parse.quote(rel)
+        _cast["title"] = clean_title(rel)[0]
+        _cast["subs"] = [{"u": vtt_url(s["rel"]), "l": s["label"]} for s in subs]
+        _cast["sub"] = sub
+        _cast["subshift"] = float(d.get("subshift", 0.0) or 0.0)
+        _cast["seek"] = float(d.get("pos", 0.0) or 0.0)
+        _cast["paused"] = False  # samo se zase rozjede
+        _cast["ver"] += 1
+        _cast["seekVer"] += 1
+        _cast["subsVer"] += 1
+    print(f"  Obnoven stav TV: {_cast['title']} @ {int(_cast['seek'])}s")
+
 
 def cast_snapshot(d):
     with _cast_lock:
@@ -1285,6 +1349,7 @@ document.addEventListener('click',function(){if(enable.style.display==='flex'){e
 function poll(){
  fetch('/cast/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
   _lastOk=Date.now();
+  _shouldPlay=!!(s.url&&!s.paused);
   if(s.ver!==curVer){
    curVer=s.ver;
    if(s.rel!==curRel){
@@ -1314,7 +1379,7 @@ function poll(){
   else _emptyN=0;
  }).catch(function(){});
 }
-var _lastOk=Date.now(),_t0=Date.now();
+var _lastOk=Date.now(),_t0=Date.now(),_shouldPlay=false,_playOk=Date.now();
 setInterval(poll,1000);poll();
 // okamzite znovupripojeni kdyz se TV probudi / vrati na zalozku
 document.addEventListener('visibilitychange',function(){if(!document.hidden){curVer=-1;curSeekVer=-1;_lastOk=Date.now();poll();}});
@@ -1324,9 +1389,11 @@ window.addEventListener('online',poll);window.addEventListener('focus',poll);
 // takze play z telefonu se zase chyti. Neobnovuje kdyz zrovna neco hraje.
 setInterval(function(){
  var now=Date.now();
- if(now-_lastOk>12000){location.reload();return;}
- if(!playing()&&now-_t0>120000){location.reload();}
-},5000);
+ if(playing())_playOk=now;                       // hraje -> vse ok
+ if(now-_lastOk>12000){location.reload();return;} // server se dlouho neozval (restart/vypadek)
+ // ma hrat (film nasazen, nepauznuto), ale uz ~10s nehraje -> obnov spojeni
+ if(_shouldPlay&&!playing()&&now-_playOk>10000){location.reload();}
+},3000);
 setInterval(updTime,500);
 setInterval(function(){
  var d=isFinite(v.duration)?Math.floor(v.duration):0;
@@ -2785,6 +2852,7 @@ class Handler(BaseHTTPRequestHandler):
                         _cast["sub"] = uki
                     _cast["subsVer"] += 1
                     _cast["ver"] += 1
+        _save_cast()  # kazda zmena "co se hraje" se hned ulozi (prezije restart)
         self.send_json({"ok": True})
 
     # ---------- Hlaseni stavu z TV ----------
@@ -2801,6 +2869,12 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             _tv["paused"] = qs.get("p", ["1"])[0] == "1"
             _tv["rel"] = qs.get("rel", [None])[0]
+        # prubezne ukladej pozici (throttle ~5s), at je po pripadnem padu aktualni
+        global _last_save_t
+        now = time.time()
+        if now - _last_save_t >= 5.0:
+            _last_save_t = now
+            _save_cast()
         self.send_json({"ok": True})
 
     def send_json(self, obj):
@@ -3230,6 +3304,7 @@ def main():
     print("  (Server nech bezet. Zavrit = zavri toto okno.)")
     print("=" * 56)
     start_enrichment()
+    _load_cast()  # obnov co se hralo na TV pred restartem (film + pozice)
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     try:
         httpd.serve_forever()

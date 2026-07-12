@@ -19,3 +19,6 @@ desktop.ini
 .DS_Store
 .idea/
 .vscode/
+
+cast_state.json
+cast_state.json.tmp
