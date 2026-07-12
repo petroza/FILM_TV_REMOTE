@@ -1939,17 +1939,29 @@ def _subsync_worker(rel, src_rel):
             f.write(clean)
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
-        _sub_set(rel, "running", "Srovnavam titulky podle zvuku filmu (~1-2 min)...")
-        r = subprocess.run([exe, video, "-i", tmp_in, "-o", tmp_out],
+        _sub_set(rel, "running", "Dukladne srovnavam podle zvuku celeho filmu (~1-3 min)...")
+        # --gss = dukladnejsi (hleda i framerate), pro vetsi jistotu; vetsi max posun
+        r = subprocess.run([exe, video, "-i", tmp_in, "-o", tmp_out,
+                            "--gss", "--max-offset-seconds", "120"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        blob = (r.stderr or "") + (r.stdout or "")
+        offm = re.search(r"offset seconds:\s*(-?[\d.]+)", blob)
+        scm = re.search(r"score:\s*([\d.]+)", blob)
+        offset = offm.group(1) if offm else "?"
+        try:
+            score = float(scm.group(1)) if scm else 0.0
+        except ValueError:
+            score = 0.0
         if r.returncode != 0 or not os.path.exists(tmp_out) or os.path.getsize(tmp_out) == 0:
             _sub_set(rel, "failed", "Srovnani se nepodarilo (nedostatek reci?).")
             return
+        # jistota podle skore: vysoke skore = spolehlive; nizke = radeji zkontroluj
+        ncues = clean.count(" --> ")
+        conf = "vysoka" if score >= max(2000, ncues * 8) else ("stredni" if score >= 400 else "NIZKA - zkontroluj/vrat puvodni")
         with open(tmp_out, "rb") as f:
             synced = f.read()
         vdir = os.path.dirname(video)
         srcbase = os.path.splitext(os.path.basename(srcpath))[0]
-        # strhni pripadny stary suffix .srovnane / .srovnaneN, at se nehromadi
         srcbase = re.sub(r"\.srovnane\d*$", "", srcbase)
         outpath = os.path.join(vdir, srcbase + ".srovnane.srt")  # jeden soubor, prepisuje se
         with open(outpath, "wb") as f:
@@ -1959,7 +1971,7 @@ def _subsync_worker(rel, src_rel):
                 os.remove(tmp)
             except OSError:
                 pass
-        _sub_set(rel, "done", "Hotovo: titulky srovnane presne na video.")
+        _sub_set(rel, "done", "Hotovo: srovnano podle zvuku (posun %s s, jistota: %s)." % (offset, conf))
     except Exception as e:
         _sub_set(rel, "failed", "Chyba: " + str(e)[:80])
 
