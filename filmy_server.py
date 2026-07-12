@@ -943,8 +943,12 @@ def video_card_html(rel, size):
     if subs:
         langs = " ".join(sorted({s["label"].split()[0] for s in subs}))
         meta += f'<span class="badge sub">&#128172; {html.escape(langs)}</span>'
+    try:
+        rval = float(rating) if rating else 0.0
+    except (ValueError, TypeError):
+        rval = 0.0
     return (f'<a class="card" href="/play?f={urllib.parse.quote(rel)}" data-name="{skey}" '
-            f'data-rel="{html.escape(rel)}">'
+            f'data-rel="{html.escape(rel)}" data-rating="{rval}">'
             f'<div class="pw">{thumb}<span class="delbtn" title="Smazat film">&#128465;</span></div>'
             f'<div class="info">{imdb_html}<div class="title">{html.escape(title)}</div>'
             f'<div class="meta">{meta}</div>'
@@ -1051,6 +1055,26 @@ function applyTv(){
 }
 function toggleTv(){localStorage.setItem('tvmode',tvOn()?'0':'1');applyTv();}
 document.addEventListener('DOMContentLoaded',applyTv);
+
+// Razeni galerie: podle hodnoceni nebo abecedne (serialy tak jdou za sebou). Pamatuje se.
+function curSort(){return localStorage.getItem('sortmode')||'rating';}
+function applySort(){
+  var grid=document.getElementById('grid');if(!grid)return;
+  var mode=curSort();
+  var cards=[].slice.call(grid.querySelectorAll('.card'));
+  cards.sort(function(a,b){
+    var na=a.dataset.name||'',nb=b.dataset.name||'';
+    if(mode==='name')return na.localeCompare(nb,'cs');
+    var ra=parseFloat(a.dataset.rating||0)||0,rb=parseFloat(b.dataset.rating||0)||0;
+    if(rb!==ra)return rb-ra;
+    return na.localeCompare(nb,'cs');
+  });
+  cards.forEach(function(c){grid.appendChild(c);});
+  var b=document.getElementById('sortbtn');
+  if(b)b.innerHTML=(mode==='name'?'\\u2645 A\\u2013Z':'\\u2b50 Hodnoceni');
+}
+function cycleSort(){localStorage.setItem('sortmode',curSort()==='rating'?'name':'rating');applySort();}
+document.addEventListener('DOMContentLoaded',applySort);
 
 // Dlouhy stisk (prst) na dlazdici filmu -> nabidne smazani z disku
 (function(){
@@ -2673,7 +2697,9 @@ class Handler(BaseHTTPRequestHandler):
                '<input class="search" placeholder="Hledat film..." '
                'oninput="filter(this.value)" autocomplete="off"></header>')
         bar = ('<div class="bar"><span id="cnt">' + str(len(vids)) + ' filmu</span>'
-               '<span><a id="tvtoggle" href="javascript:void(0)" onclick="toggleTv()">'
+               '<span><a id="sortbtn" href="javascript:void(0)" onclick="cycleSort()">'
+               '&#8645; Razeni</a> &nbsp;&middot;&nbsp; '
+               '<a id="tvtoggle" href="javascript:void(0)" onclick="toggleTv()">'
                '&#128250; TV: VYP</a> &nbsp;&middot;&nbsp; '
                '<a href="/all.m3u">&#9654; VLC</a></span></div>')
         self.send_html(build_page("FILMY", top, bar, grid))
