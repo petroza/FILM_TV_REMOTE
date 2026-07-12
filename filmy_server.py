@@ -1155,7 +1155,8 @@ def build_page(page_title, top_html, bar_html, grid_html):
 _cast_lock = threading.Lock()
 # sdileny stav "co se hraje na TV"
 _cast = {"ver": 0, "rel": None, "url": None, "title": "", "subs": [],
-         "sub": -1, "paused": False, "seek": 0.0, "seekVer": 0, "subshift": 0.0}
+         "sub": -1, "paused": False, "seek": 0.0, "seekVer": 0, "subshift": 0.0,
+         "subsVer": 0}
 # stav hlaseny z TV zpet (pro ovladac na mobilu)
 _tv = {"time": 0.0, "dur": 0.0, "paused": True, "rel": None}
 
@@ -1222,7 +1223,7 @@ video::cue{background:rgba(0,0,0,.55);color:#fff;font-size:2.4vw}
 var v=document.getElementById('tv'),idle=document.getElementById('idle'),enable=document.getElementById('enable');
 var ctl=document.getElementById('ctl'),cpp=document.getElementById('cpp'),ctitle=document.getElementById('ctitle');
 var cnow=document.getElementById('cnow'),cdur=document.getElementById('cdur'),cfill=document.getElementById('cfill'),cknob=document.getElementById('cknob'),submenu=document.getElementById('submenu');
-var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null,subsList=[],menuOpen=false,subFocus=-1,curSubShift=0;
+var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null,subsList=[],menuOpen=false,subFocus=-1,curSubShift=0,curSubsVer=-1;
 function buildTracks(){
  var olds=v.querySelectorAll('track');for(var k=olds.length-1;k>=0;k--)olds[k].remove();
  subsList.forEach(function(su){var tr=document.createElement('track');tr.kind='subtitles';tr.srclang='cs';tr.label=su.l;
@@ -1286,7 +1287,7 @@ function poll(){
   if(s.ver!==curVer){
    curVer=s.ver;
    if(s.rel!==curRel){
-    curRel=s.rel;curSubShift=s.subshift||0;
+    curRel=s.rel;curSubShift=s.subshift||0;curSubsVer=s.subsVer;
     while(v.firstChild)v.removeChild(v.firstChild);
     if(s.url){
      v.src=s.url;subsList=s.subs||[];buildTracks();
@@ -1300,6 +1301,8 @@ function poll(){
   }
   // zmena posunu titulku (z ovladace) -> prenacti stopy s novym casovanim (video hraje dal)
   if((s.subshift||0)!==curSubShift){curSubShift=s.subshift||0;if(subsList.length)buildTracks();}
+  // obnoveny seznam titulku (napr. po ffsubsync) -> prenacti stopy (video hraje dal)
+  if(s.subsVer!==curSubsVer){curSubsVer=s.subsVer;subsList=s.subs||subsList;buildTracks();}
   if(s.seekVer!==curSeekVer){curSeekVer=s.seekVer;if(isFinite(s.seek)){try{v.currentTime=s.seek;}catch(e){}}}
   // TITULKY DRZ ZAPNUTE porad (i kdyz je prohlizec resetuje nebo mobil odejde jinam)
   if(v.getAttribute('src')&&curSub>=-1)setTrack(curSub);
@@ -1401,6 +1404,9 @@ def page_remote_html(rel, sub):
         '<button onclick="rnudge(0.25)">0.25 &#9654;</button>'
         '<button onclick="rnudge(1)">1s &#9654;&#9654;</button>'
         '<button onclick="rresetShift()">&#8635;</button></div>'
+        '<button onclick="syncVid()" style="width:100%;margin:8px 0 2px;padding:13px;border-radius:12px;'
+        'border:1px solid #7e5a2f;background:#241c10;color:#f0d9b0;font-size:14px;cursor:pointer">'
+        '&#127919; Srovnat vybrany titulek podle zvuku (experiment.)</button>'
         '<a class="stop" href="javascript:void(0)" onclick="stopTv()">&#9209; Zastavit na TV</a>'
         '<div class="hint">Mobil je dalkove ovladani &ndash; film hraje na TV. '
         'Kdyby na TV nic nebylo, otevri na TV adresu <b>/tv</b>.</div>'
@@ -2400,7 +2406,8 @@ function pollSub(){fetch('/substatus?f='+encodeURIComponent(REL),{cache:'no-stor
      if(window.pollSubs){selectUKTrack();pollSubs();if(s)s.textContent=(st.msg||'')+' Zapnuto v prehravaci.';}
      else{setTimeout(function(){location.reload();},900);}
      return;}
-   if(window.pollSubs){pollSubs();}else{setTimeout(function(){location.reload();},900);}}
+   if(window.pollSubs){pollSubs();}
+   else{fetch('/cast/cmd?a=resub',{cache:'no-store'}).catch(function(){}).then(function(){setTimeout(function(){location.reload();},1000);});}}
 });}
 """
 
@@ -2653,6 +2660,7 @@ class Handler(BaseHTTPRequestHandler):
                     _cast["seek"] = 0.0
                     _cast["seekVer"] += 1
                     _cast["subshift"] = 0.0
+                    _cast["subsVer"] += 1
                     _cast["ver"] += 1
             elif a == "pause":
                 _cast["paused"] = True
@@ -2684,6 +2692,13 @@ class Handler(BaseHTTPRequestHandler):
                     _cast["ver"] += 1
                 except ValueError:
                     pass
+            elif a == "resub":
+                # obnov seznam titulku na TV (napr. po ffsubsync vznikla nova stopa)
+                if _cast.get("rel"):
+                    _cast["subs"] = [{"u": vtt_url(s["rel"]), "l": s["label"]}
+                                     for s in find_subtitles(_cast["rel"])]
+                    _cast["subsVer"] += 1
+                    _cast["ver"] += 1
         self.send_json({"ok": True})
 
     # ---------- Hlaseni stavu z TV ----------
@@ -2890,6 +2905,8 @@ video::cue{{background:rgba(0,0,0,.6);color:#fff;font-size:1.05em}}
     <button class="shbtn rst" onclick="resetShift()" title="vynulovat">&#8635;</button>
   </div>
   <div class="shhint">Kdyz titulky predbihaji, dej je &#8222;pozdeji&#8220; (&#9654;); kdyz se zpozduji, &#8222;driv&#8220; (&#9664;). Ulozi se k filmu.</div>
+  <button class="shbtn" style="width:100%;margin-top:10px;border-color:#7e5a2f" onclick="syncVid()">&#127919; Srovnat vybrany titulek podle zvuku (ffsubsync, experiment.)</button>
+  <div class="shhint">Automat podle zvuku filmu. U bezneho filmu s dialogy funguje; u arthouse/hudebnich muze minout. Vytvori novou stopu &#8222;(srovnane)&#8220; &ndash; puvodni zustane.</div>
   <details class="note"><summary>&#9432; Video se neprehrava? (MKV / HEVC)</summary>
   <div class="nb">Prohlizec neumi <b>MKV/HEVC</b> &ndash; otevri ve <b>VLC</b>:<br>
   <span class="url">http://{get_lan_ip()}:{PORT}{enc}</span></div></details>
