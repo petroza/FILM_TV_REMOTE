@@ -1223,7 +1223,7 @@ video::cue{background:rgba(0,0,0,.55);color:#fff;font-size:2.4vw}
 var v=document.getElementById('tv'),idle=document.getElementById('idle'),enable=document.getElementById('enable');
 var ctl=document.getElementById('ctl'),cpp=document.getElementById('cpp'),ctitle=document.getElementById('ctitle');
 var cnow=document.getElementById('cnow'),cdur=document.getElementById('cdur'),cfill=document.getElementById('cfill'),cknob=document.getElementById('cknob'),submenu=document.getElementById('submenu');
-var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null,subsList=[],menuOpen=false,subFocus=-1,curSubShift=0,curSubsVer=-1;
+var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null,subsList=[],menuOpen=false,subFocus=-1,curSubShift=0,curSubsVer=-1,_emptyN=0;
 function buildTracks(){
  var olds=v.querySelectorAll('track');for(var k=olds.length-1;k>=0;k--)olds[k].remove();
  subsList.forEach(function(su){var tr=document.createElement('track');tr.kind='subtitles';tr.srclang='cs';tr.label=su.l;
@@ -1307,6 +1307,11 @@ function poll(){
   if(s.seekVer!==curSeekVer){curSeekVer=s.seekVer;if(isFinite(s.seek)){try{v.currentTime=s.seek;}catch(e){}}}
   // TITULKY DRZ ZAPNUTE porad (i kdyz je prohlizec resetuje nebo mobil odejde jinam)
   if(v.getAttribute('src')&&curSub>=-1)setTrack(curSub);
+  // POJISTKA: titulek ma byt zapnuty, ale stopa nema nacteny zadny radek (spadl load)
+  // -> po ~8s prenacti stopy (video hraje dal). Brani "zapnuto ale prazdno".
+  if(curSub>=0&&v.textTracks[curSub]){var _tk=v.textTracks[curSub];
+   if(!_tk.cues||_tk.cues.length===0){if(++_emptyN>=8){_emptyN=0;if(subsList.length)buildTracks();}}else _emptyN=0;}
+  else _emptyN=0;
  }).catch(function(){});
 }
 var _lastOk=Date.now(),_t0=Date.now();
