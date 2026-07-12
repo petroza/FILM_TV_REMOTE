@@ -1395,7 +1395,7 @@ def page_remote_html(rel, sub):
         '<button onclick="autoUK()" style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin:12px 0 2px;padding:15px;border-radius:14px;border:1px solid #3b6e9e;background:linear-gradient(135deg,#15325a,#123a2e);color:#fff;font-size:15.5px;font-weight:700;line-height:1.15;text-align:center;cursor:pointer">'
         '<svg width="38" height="26" viewBox="0 0 38 26" style="flex:none"><clipPath id="ukr"><rect width="38" height="26" rx="4"/></clipPath><g clip-path="url(#ukr)"><rect width="38" height="13" fill="#005BBB"/><rect y="13" width="38" height="13" fill="#FFD500"/></g></svg>'
         '<span>Ukrajinske titulky &ndash; vyres to'
-        '<small style="display:block;font-size:11px;font-weight:400;opacity:.72;margin-top:2px">stahne ukrajinske, nebo prelozi</small></span></button>'
+        '<small style="display:block;font-size:11px;font-weight:400;opacity:.72;margin-top:2px">dalsi stisk = jiny zdroj (EN, pak CZ)</small></span></button>'
         '<div class="substat" id="substat"></div>'
         '<div class="shiftrow2"><span class="lab">&#9201; Casovani titulku (na TV):</span>'
         '<button onclick="rnudge(-1)">&#9664;&#9664; 1s</button>'
@@ -2280,10 +2280,23 @@ def _finish_uk(rel, msg):
     _sub_set(rel, "done", msg)
 
 
-def _subauto_worker(rel):
-    """JEDNO tlacitko: zajisti UKRAJINSKE titulky. Najde je na OpenSubtitles a
-    stahne; kdyz ukrajinske nejsou, stahne anglicke a PRELOZI do ukrajinstiny.
-    ZADNE srovnavani - titulky pro dany release sedi samy."""
+def _write_uk_canonical(rel, base, content):
+    """Smaze vsechny stavajici UK varianty a zapise jeden kanonicky <base>.uk.srt."""
+    for ukr in _uk_srt_files(rel):
+        p = os.path.realpath(os.path.join(MEDIA_ROOT, ukr.replace("/", os.sep)))
+        if p.startswith(os.path.realpath(MEDIA_ROOT) + os.sep) and os.path.isfile(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    with open(base + ".uk.srt", "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _subauto_worker(rel, mode="auto"):
+    """JEDNO tlacitko: zajisti UKRAJINSKE titulky. mode='auto' = stahne UK / prelozi
+    lokalni referenci; opakovany stisk posle mode='en' (stahni anglicke a preloz)
+    a pak mode='cs' (stahni ceske a preloz) - jine zdroje kdyz prvni nesedi."""
     try:
         _reload_os_config()
         vfull = os.path.join(MEDIA_ROOT, rel.replace("/", os.sep))
@@ -2294,6 +2307,23 @@ def _subauto_worker(rel):
         title, year = clean_title(rel)
         m = get_meta(rel)
         imdbid = (m or {}).get("imdb")
+
+        # opakovany stisk: vynuceny zdroj (stahni EN/CS a preloz), prepise UK
+        if mode in ("en", "cs"):
+            lang3, sl, nm = ("eng", "en", "anglickych") if mode == "en" else ("cze", "cs", "ceskych")
+            _sub_set(rel, "running", "Stahuji " + nm + " titulky a prekladam do ukrajinstiny...")
+            src = opensub_best_srt(imdbid, title, year, lang3)
+            if not src or "-->" not in src:
+                _sub_set(rel, "failed", "Na OpenSubtitles nejsou " + nm + " titulky.")
+                return
+            _sub_set(rel, "running", "Prekladam do ukrajinstiny...")
+            uk = translate_srt(clean_srt(src), sl, "uk")
+            if not uk or "-->" not in uk:
+                _sub_set(rel, "failed", "Preklad se nepodaril.")
+                return
+            _write_uk_canonical(rel, base, uk)
+            _finish_uk(rel, "Hotovo: ukrajinske titulky (prelozene ze stazenych " + nm + ").")
+            return
 
         # ---- REFERENCE CASOVANI: lokalni (ceske>anglicke), jinak STAHNI anglicke ----
         loc = _pick_translate_source(rel)
@@ -2380,8 +2410,11 @@ def _subauto_worker(rel):
 
 
 FINDSUB_JS = """
-function autoUK(){window._autoUK=true;var s=document.getElementById('substat');if(s){s.style.display='block';s.textContent='Shanim ukrajinske titulky...';}
- fetch('/subauto?f='+encodeURIComponent(REL),{cache:'no-store'}).then(pollSub);}
+function autoUK(){window._autoUK=true;
+ var modes=['auto','en','cs'];var step=(window._ukStep||0);var mode=modes[step%3];window._ukStep=step+1;
+ var msg=(mode==='auto')?'Shanim ukrajinske titulky...':(mode==='en')?'Zkousim jiny zdroj: stahuji anglicke a prekladam...':'Zkousim jiny zdroj: stahuji ceske a prekladam...';
+ var s=document.getElementById('substat');if(s){s.style.display='block';s.textContent=msg;}
+ fetch('/subauto?f='+encodeURIComponent(REL)+'&mode='+mode,{cache:'no-store'}).then(pollSub);}
 function selectUKTrack(){fetch('/sublist?f='+encodeURIComponent(REL),{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
  if(typeof rebuildSubs==='function'&&typeof curSubs!=='undefined'&&!subsEqual(list,curSubs))rebuildSubs(list);
  var sel=document.getElementById('subsel');if(!sel)return;var pick=-1,fb=-1;
@@ -2557,6 +2590,9 @@ class Handler(BaseHTTPRequestHandler):
     def sub_auto(self, query):
         qs = urllib.parse.parse_qs(query)
         rel = qs.get("f", [""])[0]
+        mode = qs.get("mode", ["auto"])[0]
+        if mode not in ("auto", "en", "cs"):
+            mode = "auto"
         if not rel or safe_path(rel) is None:
             self.send_json({"ok": False})
             return
@@ -2566,7 +2602,7 @@ class Handler(BaseHTTPRequestHandler):
             if not running:
                 _subjobs[rel] = {"state": "running", "msg": "Spoustim..."}
         if not running:
-            threading.Thread(target=_subauto_worker, args=(rel,), daemon=True).start()
+            threading.Thread(target=_subauto_worker, args=(rel, mode), daemon=True).start()
         self.send_json({"ok": True})
 
     # ---------- Dohledani + preklad titulku ----------
@@ -2893,7 +2929,7 @@ video::cue{{background:rgba(0,0,0,.6);color:#fff;font-size:1.05em}}
 <div class="panel"><div class="card">
   <div class="ph">&#128172; Titulky<span class="cnt">{subcount}</span></div>
   <select id="subsel" onchange="setSub(this.value)">{options}</select>
-  <button class="actbig" onclick="autoUK()"><svg width="42" height="28" viewBox="0 0 42 28" style="flex:none"><clipPath id="ukr"><rect width="42" height="28" rx="4"/></clipPath><g clip-path="url(#ukr)"><rect width="42" height="14" fill="#005BBB"/><rect y="14" width="42" height="14" fill="#FFD500"/></g></svg><span>Ukrajinske titulky &ndash; vyres to<small>stahne z OpenSubtitles, nebo prelozi ceske/anglicke</small></span></button>
+  <button class="actbig" onclick="autoUK()"><svg width="42" height="28" viewBox="0 0 42 28" style="flex:none"><clipPath id="ukr"><rect width="42" height="28" rx="4"/></clipPath><g clip-path="url(#ukr)"><rect width="42" height="14" fill="#005BBB"/><rect y="14" width="42" height="14" fill="#FFD500"/></g></svg><span>Ukrajinske titulky &ndash; vyres to<small>1. stisk = ukrajinske; dalsi stisk zkusi jiny zdroj (z anglictiny, pak z cestiny)</small></span></button>
   <div class="substat" id="substat"></div>
   <div class="shiftrow">
     <span class="shlab">&#9201; Casovani titulku (za behu):</span>
