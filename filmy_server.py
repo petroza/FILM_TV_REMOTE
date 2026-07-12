@@ -60,7 +60,7 @@ VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm",
 #   username + password = tvuj ucet (potreba jen pro STAHOVANI, 20/den zdarma)
 # Kdyz neni vyplneno, appka jede po staru (rest.opensubtitles.org + preklad z EN).
 def _load_os_config():
-    cfg = {"api_key": "", "username": "", "password": "", "token": ""}
+    cfg = {"api_key": "", "username": "", "password": "", "token": "", "tmdb_api_key": ""}
     try:
         p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "os_secret.json")
         if os.path.isfile(p):
@@ -75,21 +75,23 @@ def _load_os_config():
     cfg["username"] = os.environ.get("OPENSUBTITLES_USERNAME", cfg["username"])
     cfg["password"] = os.environ.get("OPENSUBTITLES_PASSWORD", cfg["password"])
     cfg["token"] = os.environ.get("OPENSUBTITLES_TOKEN", cfg["token"])
+    cfg["tmdb_api_key"] = os.environ.get("TMDB_API_KEY", cfg["tmdb_api_key"])
     return cfg
 
 
-OS_API_KEY = OS_USERNAME = OS_PASSWORD = OS_TOKEN = ""
+OS_API_KEY = OS_USERNAME = OS_PASSWORD = OS_TOKEN = TMDB_API_KEY = ""
 
 
 def _reload_os_config():
     """Znovu nacte os_secret.json do globalu - aby se novy token/heslo projevily
     ZA BEHU, bez restartu serveru."""
-    global OS_API_KEY, OS_USERNAME, OS_PASSWORD, OS_TOKEN
+    global OS_API_KEY, OS_USERNAME, OS_PASSWORD, OS_TOKEN, TMDB_API_KEY
     cfg = _load_os_config()
     OS_API_KEY = cfg["api_key"]
     OS_USERNAME = cfg["username"]
     OS_PASSWORD = cfg["password"]
     OS_TOKEN = cfg["token"]
+    TMDB_API_KEY = cfg["tmdb_api_key"]
     return cfg
 
 
@@ -529,6 +531,26 @@ def _title_match(film, article):
     return len(a & b) / min(len(a), len(b)) >= 0.6
 
 
+def tmdb_poster(imdbid):
+    """Plakat z TMDb podle IMDb ID (presne ten film). Vyzaduje free TMDB_API_KEY.
+    None kdyz klic neni nebo film nenalezen."""
+    if not TMDB_API_KEY or not imdbid:
+        return None
+    try:
+        url = ("https://api.themoviedb.org/3/find/" + imdbid
+               + "?api_key=" + urllib.parse.quote(TMDB_API_KEY) + "&external_source=imdb_id")
+        req = urllib.request.Request(url, headers={"User-Agent": _POSTER_UA,
+                                                   "Accept": "application/json"})
+        d = json.loads(urllib.request.urlopen(req, timeout=10).read().decode("utf-8", "replace"))
+        for kk in ("movie_results", "tv_results"):
+            arr = d.get(kk) or []
+            if arr and arr[0].get("poster_path"):
+                return "https://image.tmdb.org/t/p/w500" + arr[0]["poster_path"]
+    except Exception:
+        return None
+    return None
+
+
 def wiki_poster(title, year):
     """Najde plakat filmu na Wikipedii (hlavni obrazek clanku) - BEZ klice.
     Sesbira kandidaty (nazev musi sedet) a rozhodne podle ROKU: presna shoda roku
@@ -751,10 +773,10 @@ def enrich_all():
         if not have_imdb:
             entry["imdb"] = imdb_suggest(title, year)
             entry["imdb_done"] = True
-        # plakat: Wikipedia podle nazvu+roku (_title_match + kontrola roku),
-        # pripadne OMDb (kdyz klic), az uplne nakonec SNIMEK z filmu
+        # plakat: 1) TMDb podle IMDb ID (kdyz je klic - presne ten film),
+        # 2) Wikipedia podle nazvu+roku, 3) OMDb (kdyz klic), nakonec SNIMEK z filmu
         if not web_final:
-            art = wiki_poster(title, year)
+            art = tmdb_poster(entry.get("imdb")) or wiki_poster(title, year)
             if not art and OMDB_API_KEY:
                 data = omdb_fetch(title, year)
                 if data and data.get("Poster") not in (None, "N/A"):
