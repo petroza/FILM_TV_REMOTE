@@ -1384,26 +1384,41 @@ setInterval(poll,1000);poll();
 // okamzite znovupripojeni kdyz se TV probudi / vrati na zalozku
 document.addEventListener('visibilitychange',function(){if(!document.hidden){curVer=-1;curSeekVer=-1;_lastOk=Date.now();poll();}});
 window.addEventListener('online',poll);window.addEventListener('focus',poll);
-// WATCHDOG: kdyz se server dlouho neozve (poll se zasekl / TV uspala timery / restart
-// serveru) NEBO je stranka dlouho necinna, OBNOV stranku -> naváže cerstve spojeni,
-// takze play z telefonu se zase chyti. Neobnovuje kdyz zrovna neco hraje.
+// SAMSUNG/Tizen: prohlizec umi 'upustit' video (error/stall/uvolneni pameti).
+// MEKKA obnova = znovu nacteme stream a navazeme na pozici BEZ reloadu cele stranky.
+// Tim se zachova povoleni prehravat, takze to NEchce znovu stisk OK na dalkovem.
+// Tvrdy reload az kdyz mekka obnova 3x po sobe nezabere.
+var _lastPos=0,_recoT=0,_recoN=0;
+v.addEventListener('timeupdate',function(){if(v.currentTime>0.5)_lastPos=v.currentTime;});
+function softRecover(){
+ if(!curRel||!v.getAttribute('src'))return;
+ var now=Date.now();if(now-_recoT<6000)return;_recoT=now;_recoN++;
+ var pos=_lastPos||v.currentTime||0;
+ var seekBack=function(){if(pos>0.5){try{v.currentTime=pos;}catch(e){}}v.removeEventListener('loadedmetadata',seekBack);};
+ v.addEventListener('loadedmetadata',seekBack);
+ try{v.load();}catch(e){}
+ tryPlay();
+ if(_recoN>=3){_recoN=0;setTimeout(function(){if(_shouldPlay&&!playing())location.reload();},5000);}
+}
+v.addEventListener('error',function(){if(_shouldPlay)softRecover();});
+// WATCHDOG: hlida ze film ktery MA hrat opravdu hraje; jinak nejdriv mekka obnova,
+// tvrdy reload az kdyz je server hodne dlouho nedostupny (zamrzla stranka).
 setInterval(function(){
  var now=Date.now();
- if(playing())_playOk=now;                       // hraje -> vse ok
- if(now-_lastOk>12000){location.reload();return;} // server se dlouho neozval (restart/vypadek)
- // ma hrat (film nasazen, nepauznuto), ale uz ~10s nehraje -> obnov spojeni
- if(_shouldPlay&&!playing()&&now-_playOk>10000){location.reload();}
+ if(playing()){_playOk=now;_recoN=0;}              // hraje -> vse ok
+ if(_shouldPlay&&!playing()&&now-_playOk>10000){softRecover();}
+ else if(now-_lastOk>25000){location.reload();}    // stranka zamrzla -> posledni moznost
 },3000);
 setInterval(updTime,500);
 setInterval(function(){
  var d=isFinite(v.duration)?Math.floor(v.duration):0;
  fetch('/cast/report?t='+Math.floor(v.currentTime||0)+'&d='+d+'&p='+(v.paused?1:0)+'&rel='+encodeURIComponent(curRel||''),{cache:'no-store'}).catch(function(){});
 },1500);
-// samo-oprava: kdyz zamrzne stream (vypadek site/serveru), obnov ho a navaz na stejnou pozici
+// samo-oprava: kdyz zamrzne stream (currentTime se ~5s nehybe) -> mekka obnova
 var _lt=0,_stall=0;
 setInterval(function(){
  if(!playing()||v.paused){_stall=0;_lt=v.currentTime;return;}
- if(Math.abs(v.currentTime-_lt)<0.1){_stall++;if(_stall>=6){var pos=v.currentTime;v.load();try{v.currentTime=pos;}catch(e){}tryPlay();_stall=0;}}else{_stall=0;}
+ if(Math.abs(v.currentTime-_lt)<0.1){_stall++;if(_stall>=5){_stall=0;softRecover();}}else{_stall=0;}
  _lt=v.currentTime;
 },1000);
 })();
