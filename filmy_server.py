@@ -510,16 +510,35 @@ def omdb_fetch(title, year):
 _POSTER_UA = "FilmyServer/1.0 (local personal media server)"
 
 
+def _norm_title_words(s):
+    """Vyznamova slova nazvu (bez the/a/of/film/rok/interpunkce) - pro overeni shody."""
+    s = re.sub(r"\(.*?\)", " ", s or "")
+    s = re.sub(r"[^a-z0-9]+", " ", s.lower())
+    stop = {"the", "a", "an", "of", "and", "film", "movie", "part"}
+    return set(w for w in s.split() if w and w not in stop and not w.isdigit())
+
+
+def _title_match(film, article):
+    """True kdyz nazev clanku rozumne odpovida nazvu filmu (proti fuzzy trefam
+    Wikipedie, napr. 'Seven Snipers' -> 'The Gorge')."""
+    a, b = _norm_title_words(film), _norm_title_words(article)
+    if not a or not b:
+        return False
+    if a <= b or b <= a:            # jeden je podmnozina druheho
+        return True
+    return len(a & b) / min(len(a), len(b)) >= 0.6
+
+
 def wiki_poster(title, year):
     """Najde plakat filmu na Wikipedii (hlavni obrazek clanku) - BEZ klice.
-    Vraci URL obrazku nebo None."""
+    Overi, ze nalezeny clanek NAZVEM odpovida filmu. Vraci URL nebo None."""
     terms = [f"{title} film"]
     if year:
         terms.append(f"{title} {year} film")
     for term in terms:
         q = urllib.parse.urlencode({
             "action": "query", "format": "json", "generator": "search",
-            "gsrsearch": term, "gsrlimit": "1",
+            "gsrsearch": term, "gsrlimit": "3",
             "prop": "pageimages", "piprop": "original", "pilicense": "any",
         })
         url = "https://en.wikipedia.org/w/api.php?" + q
@@ -530,12 +549,14 @@ def wiki_poster(title, year):
         except Exception:
             continue
         pages = (d.get("query") or {}).get("pages") or {}
-        for p in pages.values():
+        for p in sorted(pages.values(), key=lambda x: x.get("index", 99)):
             img = (p.get("original") or {}).get("source")
             if not img:
                 continue
+            # nazev clanku musi odpovidat filmu (jinak radeji zadny plakat)
+            if not _title_match(title, p.get("title", "")):
+                continue
             # FILMY_COMMONS_ONLY=1 -> pouzij jen volne licencovane plakaty
-            # (Wikimedia Commons), nikdy fair-use obrazky nahrane lokalne na en.wiki.
             if os.environ.get("FILMY_COMMONS_ONLY") and "/commons/" not in img:
                 continue
             return img
@@ -657,12 +678,12 @@ def enrich_all():
         have_imdb = bool(ex and ex.get("imdb_done"))
         if have_poster and have_imdb:
             continue
-        if ex and ex.get("tries", 0) >= 6:
+        if ex and int(ex.get("tries", 0) or 0) >= 6:
             continue
         entry = ex or {"title": title, "year": year, "poster": None,
                        "imdb": None, "rating": None}
         entry["title"], entry["year"], entry["done"] = title, year, True
-        entry["tries"] = (ex.get("tries", 0) + 1) if ex else 1
+        entry["tries"] = (int(ex.get("tries", 0) or 0) + 1) if ex else 1
         # plakat: Wikipedia (pripadne OMDb kdyz je klic)
         if not have_poster:
             art = wiki_poster(title, year)
@@ -685,7 +706,7 @@ def enrich_all():
     # --- FAZE 2: IMDb rating z oficialniho datasetu ---
     with _meta_lock:
         need = {e["imdb"]: k for k, e in _meta.items()
-                if e.get("imdb") and not e.get("rating") and e.get("rating_tries", 0) < 6}
+                if e.get("imdb") and not e.get("rating") and int(e.get("rating_tries", 0) or 0) < 6}
     if need:
         ratings = lookup_ratings(set(need.keys()))
         got = 0
@@ -696,7 +717,7 @@ def enrich_all():
                     if r:
                         _meta[k]["rating"] = r
                         got += 1
-                    _meta[k]["rating_tries"] = _meta[k].get("rating_tries", 0) + 1
+                    _meta[k]["rating_tries"] = int(_meta[k].get("rating_tries", 0) or 0) + 1
         save_meta()
         if got:
             print(f"  [imdb] doplneno {got} hodnoceni")
