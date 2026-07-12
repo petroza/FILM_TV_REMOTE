@@ -563,6 +563,49 @@ def wiki_poster(title, year):
     return None
 
 
+def video_frame_poster(rel, key):
+    """Kdyz neni plakat z webu, vytahni snimek z filmu (ffmpeg) jako vizual.
+    Vrati jmeno souboru v cache nebo None."""
+    try:
+        import static_ffmpeg
+        static_ffmpeg.add_paths()
+    except Exception:
+        pass
+    import shutil as _sh
+    ff = _sh.which("ffmpeg")
+    fp = _sh.which("ffprobe")
+    if not ff:
+        return None
+    video = os.path.join(MEDIA_ROOT, rel.replace("/", os.sep))
+    if not os.path.isfile(video):
+        return None
+    fn = hashlib.md5((key + "|frame").encode("utf-8")).hexdigest() + ".jpg"
+    path = os.path.join(CACHE_DIR, fn)
+    if os.path.exists(path) and os.path.getsize(path) > 1000:
+        return fn
+    # delka filmu -> snimek cca ve 28 % (mimo uvod/titulky)
+    dur = 0.0
+    if fp:
+        try:
+            r = subprocess.run([fp, "-v", "error", "-show_entries", "format=duration",
+                                "-of", "default=nk=1:nw=1", video],
+                               capture_output=True, text=True, timeout=30)
+            dur = float((r.stdout or "0").strip() or 0)
+        except Exception:
+            dur = 0.0
+    t = int(dur * 0.28) if dur > 60 else 120
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        subprocess.run([ff, "-y", "-ss", str(t), "-i", video, "-frames:v", "1",
+                        "-vf", "scale=480:-1", "-q:v", "3", path],
+                       capture_output=True, timeout=90)
+        if os.path.exists(path) and os.path.getsize(path) > 1000:
+            return fn
+    except Exception:
+        pass
+    return None
+
+
 def download_poster(poster_url, key):
     if not poster_url or poster_url == "N/A":
         return None
@@ -674,18 +717,20 @@ def enrich_all():
         key = _meta_key(title, year)
         with _meta_lock:
             ex = dict(_meta[key]) if key in _meta else None
-        have_poster = bool(ex and ex.get("poster"))
+        # webovy plakat je "finalni"; frame ze filmu je jen docasna nahrada,
+        # dokud se webovy nenajde (proto se u frame poradad zkousi dal)
+        web_final = bool(ex and ex.get("poster") and ex.get("poster_kind") == "web")
         have_imdb = bool(ex and ex.get("imdb_done"))
-        if have_poster and have_imdb:
+        if web_final and have_imdb:
             continue
-        if ex and int(ex.get("tries", 0) or 0) >= 6:
+        if ex and int(ex.get("tries", 0) or 0) >= 6 and (ex.get("poster") and have_imdb):
             continue
         entry = ex or {"title": title, "year": year, "poster": None,
                        "imdb": None, "rating": None}
         entry["title"], entry["year"], entry["done"] = title, year, True
         entry["tries"] = (int(ex.get("tries", 0) or 0) + 1) if ex else 1
-        # plakat: Wikipedia (pripadne OMDb kdyz je klic)
-        if not have_poster:
+        # plakat: nejdriv WEB (Wikipedia / OMDb), az kdyz nic tak SNIMEK z filmu
+        if not web_final:
             art = wiki_poster(title, year)
             if not art and OMDB_API_KEY:
                 data = omdb_fetch(title, year)
@@ -695,6 +740,13 @@ def enrich_all():
                 pf = download_poster(art, key)
                 if pf:
                     entry["poster"] = pf
+                    entry["poster_kind"] = "web"
+            # zadny webovy plakat: kdyz jeste nemame zadny vizual, dej snimek z filmu
+            if entry.get("poster_kind") != "web" and not entry.get("poster"):
+                fr = video_frame_poster(rel, key)
+                if fr:
+                    entry["poster"] = fr
+                    entry["poster_kind"] = "frame"
         # IMDb ID pres suggestion API
         if not have_imdb:
             entry["imdb"] = imdb_suggest(title, year)
@@ -2563,6 +2615,17 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- Vsechny filmy (plocho, globalni hledani) ----------
     def page_all(self):
         vids = list_videos()
+
+        # seradit podle IMDb hodnoceni (reference) - nejvyssi nahoru, bez hodnoceni na konec
+        def _rank(item):
+            mt = get_meta(item[0])
+            try:
+                rt = float((mt or {}).get("rating") or 0)
+            except (ValueError, TypeError):
+                rt = 0.0
+            return (0, -rt) if rt > 0 else (1, clean_title(item[0])[0].lower())
+
+        vids = sorted(vids, key=_rank)
         grid = "".join(video_card_html(r, s) for r, s in vids)
         if not grid:
             grid = '<p style="opacity:.6;grid-column:1/-1;padding:20px">Zadne video.</p>'
