@@ -274,6 +274,35 @@ def vtt_url(rel):
         return u
 
 
+_acodec_cache = {}
+# zvukove kodeky, ktere prohlizec v HTML5 NEUMI (nutny prevod na AAC)
+_INCOMPAT_AUDIO = {"ac3", "eac3", "dts", "dca", "truehd", "mlp"}
+
+
+def audio_codec(rel):
+    """Vrati kodek 1. zvukove stopy (ac3/aac/...) - kvuli detekci nekompatibilniho
+    zvuku v prohlizeci. Cachuje se v pameti."""
+    if rel in _acodec_cache:
+        return _acodec_cache[rel]
+    c = ""
+    try:
+        import static_ffmpeg
+        static_ffmpeg.add_paths()
+        import shutil as _sh
+        fp = _sh.which("ffprobe")
+        full = os.path.join(MEDIA_ROOT, rel.replace("/", os.sep))
+        if fp and os.path.isfile(full):
+            r = subprocess.run([fp, "-v", "error", "-select_streams", "a:0",
+                                "-show_entries", "stream=codec_name",
+                                "-of", "default=nk=1:nw=1", full],
+                               capture_output=True, text=True, timeout=20)
+            c = (r.stdout or "").strip().lower()
+    except Exception:
+        c = ""
+    _acodec_cache[rel] = c
+    return c
+
+
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 # balastni obrazky (bannery torrent-webu apod.) - nepouzivat jako plakat
 _JUNK_IMG = ("yts", "yify", "www", "rarbg", "eztv", "1337", "sample",
@@ -1064,10 +1093,10 @@ function applySort(){
   var cards=[].slice.call(grid.querySelectorAll('.card'));
   cards.sort(function(a,b){
     var na=a.dataset.name||'',nb=b.dataset.name||'';
-    if(mode==='name')return na.localeCompare(nb,'cs');
+    if(mode==='name')return na.localeCompare(nb,'cs',{numeric:true});
     var ra=parseFloat(a.dataset.rating||0)||0,rb=parseFloat(b.dataset.rating||0)||0;
     if(rb!==ra)return rb-ra;
-    return na.localeCompare(nb,'cs');
+    return na.localeCompare(nb,'cs',{numeric:true});
   });
   cards.forEach(function(c){grid.appendChild(c);});
   var b=document.getElementById('sortbtn');
@@ -2390,6 +2419,8 @@ class Handler(BaseHTTPRequestHandler):
             self.playlist()
         elif path.startswith("/media/"):
             self.serve_media(path[len("/media/"):])
+        elif path.startswith("/xa/"):
+            self.serve_xa(path[len("/xa/"):])
         elif path.startswith("/vtt/"):
             self.serve_vtt(path[len("/vtt/"):], parsed.query)
         elif path.startswith("/cache/"):
@@ -2738,6 +2769,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404, "Nenalezeno")
             return
         enc = "/media/" + urllib.parse.quote(rel)
+        # kdyz ma film zvuk, ktery prohlizec neumi (AC3/DTS...), prehraj prevedeny
+        # stream (video kopie + AAC zvuk); jinak primo soubor
+        acodec = audio_codec(rel)
+        bad_audio = acodec in _INCOMPAT_AUDIO
+        play_src = ("/xa/" + urllib.parse.quote(rel)) if bad_audio else enc
+        audio_note = ("<div class=\"anote\">&#128266; Zvuk <b>%s</b> prohlizec neumi &ndash; "
+                      "prevadim na AAC za behu (video se jen kopiruje). Kdyby to drhlo, "
+                      "otevri ve VLC nize.</div>" % html.escape(acodec.upper())) if bad_audio else ""
         name = html.escape(rel)
         rel_json = json.dumps(rel)
         findsub_js = FINDSUB_JS
@@ -2799,9 +2838,11 @@ video::cue{{background:rgba(0,0,0,.6);color:#fff;font-size:1.05em}}
 .note summary::-webkit-details-marker{{display:none}}
 .nb{{padding:2px 2px 2px;line-height:1.55}}
 .url{{font-family:Consolas,monospace;color:#8fd3ff;user-select:all;word-break:break-all}}
+.anote{{margin:0;padding:10px 16px;font-size:12.5px;background:#241a2e;border-bottom:1px solid #3a2a4a;color:#e0c8ff;line-height:1.45}}
 </style></head><body>
 <div class="top"><a href="/">&larr; Zpet na seznam</a></div>
-<video id="vid" controls autoplay crossorigin="anonymous" src="{enc}">{tracks}</video>
+<video id="vid" controls autoplay crossorigin="anonymous" src="{play_src}">{tracks}</video>
+{audio_note}
 <div class="panel"><div class="card">
   <div class="ph">&#128172; Titulky<span class="cnt">{subcount}</span></div>
   <select id="subsel" onchange="setSub(this.value)">{options}</select>
@@ -2911,6 +2952,47 @@ window.addEventListener('load', function(){{
         self.wfile.write(data)
 
     # ---------- Servirovani souboru s podporou Range (seekovani) ----------
+    def serve_xa(self, rel):
+        """Zivy prevod: video se kopiruje, ZVUK se prevede na AAC (kvuli AC3/DTS,
+        ktere prohlizec neumi). Streamuje fragmentovany MP4."""
+        full = safe_path(rel)
+        if not full or not os.path.isfile(full):
+            self.send_error(404, "Soubor nenalezen")
+            return
+        try:
+            import static_ffmpeg
+            static_ffmpeg.add_paths()
+            import shutil as _sh
+            ff = _sh.which("ffmpeg")
+        except Exception:
+            ff = None
+        if not ff:
+            self.send_error(500, "ffmpeg neni k dispozici")
+            return
+        cmd = [ff, "-hide_banner", "-loglevel", "error", "-i", full,
+               "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "aac",
+               "-b:a", "192k", "-ac", "2",
+               "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Accept-Ranges", "none")
+        self.end_headers()
+        try:
+            while True:
+                chunk = p.stdout.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            try:
+                p.kill()
+            except OSError:
+                pass
+
     def serve_media(self, rel):
         full = safe_path(rel)
         if not full or not os.path.isfile(full):
