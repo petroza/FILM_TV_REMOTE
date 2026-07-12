@@ -1284,6 +1284,7 @@ document.addEventListener('keydown',function(e){
 document.addEventListener('click',function(){if(enable.style.display==='flex'){enableNow();}else{goFS();showCtl();}});
 function poll(){
  fetch('/cast/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
+  _lastOk=Date.now();
   if(s.ver!==curVer){
    curVer=s.ver;
    if(s.rel!==curRel){
@@ -1308,10 +1309,19 @@ function poll(){
   if(v.getAttribute('src')&&curSub>=-1)setTrack(curSub);
  }).catch(function(){});
 }
+var _lastOk=Date.now(),_t0=Date.now();
 setInterval(poll,1000);poll();
 // okamzite znovupripojeni kdyz se TV probudi / vrati na zalozku
-document.addEventListener('visibilitychange',function(){if(!document.hidden){curVer=-1;curSeekVer=-1;poll();}});
+document.addEventListener('visibilitychange',function(){if(!document.hidden){curVer=-1;curSeekVer=-1;_lastOk=Date.now();poll();}});
 window.addEventListener('online',poll);window.addEventListener('focus',poll);
+// WATCHDOG: kdyz se server dlouho neozve (poll se zasekl / TV uspala timery / restart
+// serveru) NEBO je stranka dlouho necinna, OBNOV stranku -> naváže cerstve spojeni,
+// takze play z telefonu se zase chyti. Neobnovuje kdyz zrovna neco hraje.
+setInterval(function(){
+ var now=Date.now();
+ if(now-_lastOk>12000){location.reload();return;}
+ if(!playing()&&now-_t0>120000){location.reload();}
+},5000);
 setInterval(updTime,500);
 setInterval(function(){
  var d=isFinite(v.duration)?Math.floor(v.duration):0;
