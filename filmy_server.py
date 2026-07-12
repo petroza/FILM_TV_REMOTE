@@ -1155,7 +1155,7 @@ def build_page(page_title, top_html, bar_html, grid_html):
 _cast_lock = threading.Lock()
 # sdileny stav "co se hraje na TV"
 _cast = {"ver": 0, "rel": None, "url": None, "title": "", "subs": [],
-         "sub": -1, "paused": False, "seek": 0.0, "seekVer": 0}
+         "sub": -1, "paused": False, "seek": 0.0, "seekVer": 0, "subshift": 0.0}
 # stav hlaseny z TV zpet (pro ovladac na mobilu)
 _tv = {"time": 0.0, "dur": 0.0, "paused": True, "rel": None}
 
@@ -1222,7 +1222,13 @@ video::cue{background:rgba(0,0,0,.55);color:#fff;font-size:2.4vw}
 var v=document.getElementById('tv'),idle=document.getElementById('idle'),enable=document.getElementById('enable');
 var ctl=document.getElementById('ctl'),cpp=document.getElementById('cpp'),ctitle=document.getElementById('ctitle');
 var cnow=document.getElementById('cnow'),cdur=document.getElementById('cdur'),cfill=document.getElementById('cfill'),cknob=document.getElementById('cknob'),submenu=document.getElementById('submenu');
-var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null,subsList=[],menuOpen=false,subFocus=-1;
+var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null,subsList=[],menuOpen=false,subFocus=-1,curSubShift=0;
+function buildTracks(){
+ var olds=v.querySelectorAll('track');for(var k=olds.length-1;k>=0;k--)olds[k].remove();
+ subsList.forEach(function(su){var tr=document.createElement('track');tr.kind='subtitles';tr.srclang='cs';tr.label=su.l;
+  tr.src=su.u+(curSubShift?((su.u.indexOf('?')>=0?'&':'?')+'shift='+curSubShift):'');v.appendChild(tr);});
+ setTrack(curSub);
+}
 try{
  var fsOK=!!(document.fullscreenEnabled||document.webkitFullscreenEnabled);
  var t=document.createElement('video');
@@ -1280,11 +1286,10 @@ function poll(){
   if(s.ver!==curVer){
    curVer=s.ver;
    if(s.rel!==curRel){
-    curRel=s.rel;
+    curRel=s.rel;curSubShift=s.subshift||0;
     while(v.firstChild)v.removeChild(v.firstChild);
     if(s.url){
-     v.src=s.url;subsList=s.subs||[];
-     subsList.forEach(function(su){var tr=document.createElement('track');tr.kind='subtitles';tr.srclang='cs';tr.label=su.l;tr.src=su.u;v.appendChild(tr);});
+     v.src=s.url;subsList=s.subs||[];buildTracks();
      v.load();idle.style.display='none';ctitle.textContent=s.title||'';tryPlay();goFS();showCtl();
     }else{v.removeAttribute('src');v.load();idle.style.display='flex';subsList=[];menuOpen=false;submenu.style.display='none';hideCtl();}
     curSub=-3;
@@ -1293,6 +1298,8 @@ function poll(){
    if(s.paused&&!v.paused)v.pause();
    if(!s.paused&&v.paused&&v.getAttribute('src'))tryPlay();
   }
+  // zmena posunu titulku (z ovladace) -> prenacti stopy s novym casovanim (video hraje dal)
+  if((s.subshift||0)!==curSubShift){curSubShift=s.subshift||0;if(subsList.length)buildTracks();}
   if(s.seekVer!==curSeekVer){curSeekVer=s.seekVer;if(isFinite(s.seek)){try{v.currentTime=s.seek;}catch(e){}}}
   // TITULKY DRZ ZAPNUTE porad (i kdyz je prohlizec resetuje nebo mobil odejde jinam)
   if(v.getAttribute('src')&&curSub>=-1)setTrack(curSub);
@@ -1346,6 +1353,10 @@ select{flex:1;padding:12px;font-size:16px;background:#171922;color:#fff;border:1
 .act.a3{border-color:#7e5a2f}
 .substat{display:none;padding:8px 2px 0;font-size:13px;color:#9fb0c8}
 .hint{opacity:.5;font-size:12.5px;margin-top:16px;line-height:1.5}
+.shiftrow2{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:14px 0 2px}
+.shiftrow2 .lab{font-size:12.5px;color:#8a93a6;width:100%}
+.shiftrow2 button{flex:1;min-width:52px;background:#171922;color:#e8e8ea;border:1px solid #2a2f3e;border-radius:10px;padding:12px 4px;font-size:14px;cursor:pointer}
+.shiftrow2 #shlbl{flex:0 0 62px;text-align:center;color:#8ee6b0;font-weight:600;font-size:13px}
 """
 
 
@@ -1383,6 +1394,13 @@ def page_remote_html(rel, sub):
         '<span>Ukrajinske titulky &ndash; vyres to'
         '<small style="display:block;font-size:11px;font-weight:400;opacity:.72;margin-top:2px">stahne ukrajinske, nebo prelozi</small></span></button>'
         '<div class="substat" id="substat"></div>'
+        '<div class="shiftrow2"><span class="lab">&#9201; Casovani titulku (na TV):</span>'
+        '<button onclick="rnudge(-1)">&#9664;&#9664; 1s</button>'
+        '<button onclick="rnudge(-0.25)">&#9664; 0.25</button>'
+        '<span id="shlbl">0.00 s</span>'
+        '<button onclick="rnudge(0.25)">0.25 &#9654;</button>'
+        '<button onclick="rnudge(1)">1s &#9654;&#9654;</button>'
+        '<button onclick="rresetShift()">&#8635;</button></div>'
         '<a class="stop" href="javascript:void(0)" onclick="stopTv()">&#9209; Zastavit na TV</a>'
         '<div class="hint">Mobil je dalkove ovladani &ndash; film hraje na TV. '
         'Kdyby na TV nic nebylo, otevri na TV adresu <b>/tv</b>.</div>'
@@ -1394,10 +1412,16 @@ REMOTE_JS = """
 var dur=0,paused=false,seeking=false;
 function cmd(u){return fetch(u,{cache:'no-store'}).catch(function(){});}
 function startPlay(){cmd('/cast/cmd?a=play&f='+encodeURIComponent(REL)+'&sub='+SUB);}
+// doladeni casovani titulku na TV (posun se ulozi k filmu, sdileny s prehravacem /play)
+var subShift=parseFloat(localStorage.getItem('shift_'+REL)||'0')||0;
+function updSh(){var e=document.getElementById('shlbl');if(e)e.textContent=(subShift>0?'+':'')+subShift.toFixed(2)+' s';}
+function rnudge(d){subShift=Math.round((subShift+d)*100)/100;localStorage.setItem('shift_'+REL,String(subShift));updSh();cmd('/cast/cmd?a=subshift&d='+subShift);}
+function rresetShift(){subShift=0;localStorage.removeItem('shift_'+REL);updSh();cmd('/cast/cmd?a=subshift&d=0');}
 // pust film jen kdyz na TV jeste nebezi (obnoveni ovladace = jen pripojeni, ne restart)
 fetch('/cast/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
  if(!s||s.rel!==REL){startPlay();}
-}).catch(startPlay);
+ updSh();if(subShift)cmd('/cast/cmd?a=subshift&d='+subShift);
+}).catch(function(){startPlay();updSh();});
 function fmt(s){s=Math.floor(s||0);if(!isFinite(s))s=0;var m=Math.floor(s/60),x=s%60;return m+':'+(x<10?'0':'')+x;}
 function poll(){fetch('/cast/tv',{cache:'no-store'}).then(function(r){return r.json();}).then(function(t){
  dur=t.dur||0;paused=t.paused;
@@ -2628,6 +2652,7 @@ class Handler(BaseHTTPRequestHandler):
                     _cast["paused"] = False
                     _cast["seek"] = 0.0
                     _cast["seekVer"] += 1
+                    _cast["subshift"] = 0.0
                     _cast["ver"] += 1
             elif a == "pause":
                 _cast["paused"] = True
@@ -2650,6 +2675,12 @@ class Handler(BaseHTTPRequestHandler):
             elif a == "sub":
                 try:
                     _cast["sub"] = int(qs.get("i", ["-1"])[0])
+                    _cast["ver"] += 1
+                except ValueError:
+                    pass
+            elif a == "subshift":
+                try:
+                    _cast["subshift"] = float(qs.get("d", ["0"])[0])
                     _cast["ver"] += 1
                 except ValueError:
                     pass
