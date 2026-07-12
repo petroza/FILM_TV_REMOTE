@@ -1071,7 +1071,7 @@ function applySort(){
   });
   cards.forEach(function(c){grid.appendChild(c);});
   var b=document.getElementById('sortbtn');
-  if(b)b.innerHTML=(mode==='name'?'\\u2645 A\\u2013Z':'\\u2b50 Hodnoceni');
+  if(b)b.innerHTML=(mode==='name'?'\\u21C5 Abecedne':'\\u21C5 Hodnoceni');
 }
 function cycleSort(){localStorage.setItem('sortmode',curSort()==='rating'?'name':'rating');applySort();}
 document.addEventListener('DOMContentLoaded',applySort);
