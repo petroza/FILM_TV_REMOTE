@@ -531,19 +531,24 @@ def _title_match(film, article):
 
 def wiki_poster(title, year):
     """Najde plakat filmu na Wikipedii (hlavni obrazek clanku) - BEZ klice.
-    Overi, ze nalezeny clanek NAZVEM odpovida filmu. Vraci URL nebo None."""
+    Sesbira kandidaty (nazev musi sedet) a rozhodne podle ROKU: presna shoda roku
+    vyhrava; kdyz zadny nesedi a nazev je ambiguozni (jina verze ma v nazvu rok),
+    radeji nic (jinak by dal cizi film stejneho jmena)."""
     terms = [f"{title} film"]
     if year:
         terms.append(f"{title} {year} film")
+    commons_only = bool(os.environ.get("FILMY_COMMONS_ONLY"))
+    cand = []  # (article_year|None, img)
+    seen = set()
     for term in terms:
         q = urllib.parse.urlencode({
             "action": "query", "format": "json", "generator": "search",
             "gsrsearch": term, "gsrlimit": "3",
             "prop": "pageimages", "piprop": "original", "pilicense": "any",
         })
-        url = "https://en.wikipedia.org/w/api.php?" + q
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": _POSTER_UA})
+            req = urllib.request.Request("https://en.wikipedia.org/w/api.php?" + q,
+                                         headers={"User-Agent": _POSTER_UA})
             with urllib.request.urlopen(req, timeout=8) as r:
                 d = json.loads(r.read().decode("utf-8", "replace"))
         except Exception:
@@ -551,16 +556,26 @@ def wiki_poster(title, year):
         pages = (d.get("query") or {}).get("pages") or {}
         for p in sorted(pages.values(), key=lambda x: x.get("index", 99)):
             img = (p.get("original") or {}).get("source")
-            if not img:
+            ptitle = p.get("title", "")
+            if not img or ptitle in seen:
                 continue
-            # nazev clanku musi odpovidat filmu (jinak radeji zadny plakat)
-            if not _title_match(title, p.get("title", "")):
+            seen.add(ptitle)
+            if not _title_match(title, ptitle):
                 continue
-            # FILMY_COMMONS_ONLY=1 -> pouzij jen volne licencovane plakaty
-            if os.environ.get("FILMY_COMMONS_ONLY") and "/commons/" not in img:
+            if commons_only and "/commons/" not in img:
                 continue
-            return img
-    return None
+            ym = re.search(r"\((\d{4})", ptitle)
+            cand.append((int(ym.group(1)) if ym else None, img))
+    if not cand:
+        return None
+    if year:
+        y = int(year)
+        for ay, img in cand:                       # 1) presna shoda roku vzdy vyhrava
+            if ay is not None and abs(ay - y) <= 1:
+                return img
+        if any(ay is not None for ay, _ in cand):   # 2) existuje verze s JINYM rokem -> ambiguozni -> nic
+            return None
+    return cand[0][1]                               # 3) jinak prvni (nazev sedel pres _title_match)
 
 
 def video_frame_poster(rel, key):
@@ -723,13 +738,21 @@ def enrich_all():
         have_imdb = bool(ex and ex.get("imdb_done"))
         if web_final and have_imdb:
             continue
-        if ex and int(ex.get("tries", 0) or 0) >= 6 and (ex.get("poster") and have_imdb):
+        # frame je jen docasny -> zkousime web plakat dlouho (i pres throttle Wikipedie);
+        # kdyz uz je nejaky vizual, ostatni pripady koncime po 6 pokusech
+        cap = 40 if (ex and ex.get("poster_kind") == "frame") else 6
+        if ex and int(ex.get("tries", 0) or 0) >= cap and (ex.get("poster") and have_imdb):
             continue
         entry = ex or {"title": title, "year": year, "poster": None,
                        "imdb": None, "rating": None}
         entry["title"], entry["year"], entry["done"] = title, year, True
         entry["tries"] = (int(ex.get("tries", 0) or 0) + 1) if ex else 1
-        # plakat: nejdriv WEB (Wikipedia / OMDb), az kdyz nic tak SNIMEK z filmu
+        # IMDb ID nejdriv (potreba pro presne hledani plakatu pres Wikidata)
+        if not have_imdb:
+            entry["imdb"] = imdb_suggest(title, year)
+            entry["imdb_done"] = True
+        # plakat: Wikipedia podle nazvu+roku (_title_match + kontrola roku),
+        # pripadne OMDb (kdyz klic), az uplne nakonec SNIMEK z filmu
         if not web_final:
             art = wiki_poster(title, year)
             if not art and OMDB_API_KEY:
@@ -741,16 +764,11 @@ def enrich_all():
                 if pf:
                     entry["poster"] = pf
                     entry["poster_kind"] = "web"
-            # zadny webovy plakat: kdyz jeste nemame zadny vizual, dej snimek z filmu
             if entry.get("poster_kind") != "web" and not entry.get("poster"):
                 fr = video_frame_poster(rel, key)
                 if fr:
                     entry["poster"] = fr
                     entry["poster_kind"] = "frame"
-        # IMDb ID pres suggestion API
-        if not have_imdb:
-            entry["imdb"] = imdb_suggest(title, year)
-            entry["imdb_done"] = True
         with _meta_lock:
             _meta[key] = entry
         save_meta()
