@@ -2458,8 +2458,9 @@ function pollSub(){fetch('/substatus?f='+encodeURIComponent(REL),{cache:'no-stor
  if(st.state==='running'){setTimeout(pollSub,1500);}
  else if(st.state==='done'){if(s)s.textContent=st.msg||'';
    if(window._autoUK){window._autoUK=false;
-     if(window.pollSubs){selectUKTrack();pollSubs();if(s)s.textContent=(st.msg||'')+' Zapnuto v prehravaci.';}
-     else{setTimeout(function(){location.reload();},900);}
+     if(window.pollSubs){if(s)s.textContent=(st.msg||'')+' Zapinam titulky...';
+       setTimeout(selectUKTrack,500);setTimeout(selectUKTrack,2000);}
+     else{fetch('/cast/cmd?a=resub',{cache:'no-store'}).catch(function(){}).then(function(){setTimeout(function(){location.reload();},1000);});}
      return;}
    if(window.pollSubs){pollSubs();}
    else{fetch('/cast/cmd?a=resub',{cache:'no-store'}).catch(function(){}).then(function(){setTimeout(function(){location.reload();},1000);});}}
@@ -2751,10 +2752,18 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     pass
             elif a == "resub":
-                # obnov seznam titulku na TV (napr. po ffsubsync vznikla nova stopa)
+                # obnov seznam titulku na TV (napr. po vyres-to/ffsubsync vznikla nova
+                # stopa) a rovnou ZAPNI ukrajinske (prednostne (srovnane))
                 if _cast.get("rel"):
-                    _cast["subs"] = [{"u": vtt_url(s["rel"]), "l": s["label"]}
-                                     for s in find_subtitles(_cast["rel"])]
+                    subs2 = find_subtitles(_cast["rel"])
+                    _cast["subs"] = [{"u": vtt_url(s["rel"]), "l": s["label"]} for s in subs2]
+                    uki = next((i for i, s in enumerate(subs2)
+                                if "Ukrajinsky" in s["label"] and "srovn" in s["label"].lower()), None)
+                    if uki is None:
+                        uki = next((i for i, s in enumerate(subs2)
+                                    if "Ukrajinsky" in s["label"]), None)
+                    if uki is not None:
+                        _cast["sub"] = uki
                     _cast["subsVer"] += 1
                     _cast["ver"] += 1
         self.send_json({"ok": True})
