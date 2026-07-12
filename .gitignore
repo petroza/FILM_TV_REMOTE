@@ -2,6 +2,9 @@
 cache/
 *.log
 
+# OpenSubtitles API key + login - NIKDY necommitovat
+os_secret.json
+
 # Python
 __pycache__/
 *.py[cod]
