@@ -1425,7 +1425,7 @@ def page_remote_html(rel, sub):
 
 
 REMOTE_JS = """
-var dur=0,paused=false,seeking=false;
+var dur=0,paused=false,seeking=false,_seekTgt=-1,_seekLock=0;
 function cmd(u){return fetch(u,{cache:'no-store'}).catch(function(){});}
 function startPlay(){cmd('/cast/cmd?a=play&f='+encodeURIComponent(REL)+'&sub='+SUB);}
 // doladeni casovani titulku na TV (posun se ulozi k filmu, sdileny s prehravacem /play)
@@ -1440,10 +1440,17 @@ fetch('/cast/state',{cache:'no-store'}).then(function(r){return r.json();}).then
 }).catch(function(){startPlay();updSh();});
 function fmt(s){s=Math.floor(s||0);if(!isFinite(s))s=0;var m=Math.floor(s/60),x=s%60;return m+':'+(x<10?'0':'')+x;}
 function poll(){fetch('/cast/tv',{cache:'no-store'}).then(function(r){return r.json();}).then(function(t){
- dur=t.dur||0;paused=t.paused;
- document.getElementById('cur').textContent=fmt(t.time);
+ dur=t.dur||0;paused=t.paused;var tt=t.time||0;
  document.getElementById('dur').textContent=fmt(dur);
- var sk=document.getElementById('seek');if(!seeking){sk.max=dur||0;sk.value=t.time||0;}
+ var sk=document.getElementById('seek');if(dur)sk.max=dur;
+ var now=Date.now();
+ if(seeking){ /* uzivatel prave tahne posuvnik - nesahat */ }
+ else if(_seekLock&&now<_seekLock&&Math.abs(tt-_seekTgt)>2){
+   // po skoku drz posuvnik na cili, dokud TV nedozene (jinak by to skocilo zpet)
+   sk.value=_seekTgt;document.getElementById('cur').textContent=fmt(_seekTgt);
+ }else{
+   _seekLock=0;sk.value=tt;document.getElementById('cur').textContent=fmt(tt);
+ }
  document.getElementById('pp').innerHTML=paused?'&#9654;':'&#9208;';
 }).catch(function(){});}
 setInterval(poll,1000);poll();
@@ -1451,13 +1458,19 @@ setInterval(poll,1000);poll();
 document.addEventListener('visibilitychange',function(){if(!document.hidden)poll();});
 window.addEventListener('online',poll);window.addEventListener('focus',poll);
 function pp(){cmd('/cast/cmd?a='+(paused?'resume':'pause'));paused=!paused;}
-function back10(){cmd('/cast/cmd?a=seek&t='+Math.max(0,(+document.getElementById('seek').value)-10));}
-function fwd10(){cmd('/cast/cmd?a=seek&t='+((+document.getElementById('seek').value)+10));}
+// presny skok na cas t: nastav posuvnik, uzamkni ho na cili a posli na TV
+function seekTo(t){t=Math.max(0,Math.min(dur||1e9,Math.round(t)));seeking=false;_seekTgt=t;_seekLock=Date.now()+6000;
+ var sk=document.getElementById('seek');sk.value=t;document.getElementById('cur').textContent=fmt(t);cmd('/cast/cmd?a=seek&t='+t);}
+function back10(){seekTo((+document.getElementById('seek').value)-10);}
+function fwd10(){seekTo((+document.getElementById('seek').value)+10);}
 function stopTv(){cmd('/cast/cmd?a=stop');}
 function subch(v){cmd('/cast/cmd?a=sub&i='+v);}
 var sk=document.getElementById('seek');
 sk.addEventListener('input',function(){seeking=true;document.getElementById('cur').textContent=fmt(+sk.value);});
-sk.addEventListener('change',function(){seeking=false;cmd('/cast/cmd?a=seek&t='+(+sk.value));});
+sk.addEventListener('change',function(){seekTo(+sk.value);});
+// TAP kamkoliv na listu -> skoc presne tam (mobilni <input range> na pouhy tap nereaguje)
+sk.addEventListener('pointerdown',function(e){var r=sk.getBoundingClientRect();if(r.width<=0||!dur)return;
+ var pct=(e.clientX-r.left)/r.width;pct=Math.max(0,Math.min(1,pct));seekTo(pct*dur);});
 """
 
 
@@ -2053,7 +2066,8 @@ def _ffsync_to_audio(video, sub_text):
         f.write(clean)
     if os.path.exists(tmp_out):
         os.remove(tmp_out)
-    r = subprocess.run([exe, video, "-i", tmp_in, "-o", tmp_out],
+    r = subprocess.run([exe, video, "-i", tmp_in, "-o", tmp_out,
+                        "--gss", "--max-offset-seconds", "120"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     blob = (r.stderr or "") + (r.stdout or "")
 
@@ -2343,89 +2357,89 @@ def _subauto_worker(rel, mode="auto"):
             if not uk or "-->" not in uk:
                 _sub_set(rel, "failed", "Preklad se nepodaril.")
                 return
+            # srovnej i preklad na zvuk videa (spravne casovani)
+            _sub_set(rel, "running", "Kontroluji podle zvuku filmu...")
+            aligned, off, scale, score = _ffsync_to_audio(vfull, uk)
+            extra = ""
+            if aligned and "-->" in aligned:
+                uk = aligned
+                extra = " (srovnano na zvuk, posun %+.1f s)" % (off or 0.0)
             _write_uk_canonical(rel, base, uk)
-            _finish_uk(rel, "Hotovo: ukrajinske titulky (prelozene ze stazenych " + nm + ").")
+            _finish_uk(rel, "Hotovo: ukrajinske titulky (prelozene ze stazenych " + nm + ")" + extra + ".")
             return
 
-        # ---- REFERENCE CASOVANI: lokalni (ceske>anglicke), jinak STAHNI anglicke ----
-        loc = _pick_translate_source(rel)
-        ref_txt = ref_name = ref_sl = None
-        if loc:
-            ref_txt = clean_srt(_read_local_srt(loc[0]) or "")
-            if "-->" in (ref_txt or ""):
-                ref_name, ref_sl = loc[1], loc[2]
-            else:
-                ref_txt = None
-        if not ref_txt:
-            _sub_set(rel, "running", "Stahuji anglicke titulky jako referenci casovani...")
-            en_ref = opensub_best_srt(imdbid, title, year, "eng")
-            if en_ref and "-->" in en_ref:
-                ref_txt, ref_name, ref_sl = en_ref, "Anglicky (stazene)", "en"
+        # ==== CHYTRA AUTO-DIAGNOSTIKA ====
+        # Ziskej ukrajinske z vic zdroju a KAZDY srovnej na ZVUK VIDEA (ffsubsync).
+        # Skore z ffsubsync = jak dobre titulek sedi na skutecny film -> vyber
+        # variantu s nejvyssim skore (= nejspravnejsi casovani). Muze trvat i minutu.
+        best = None  # (aligned_text, score, label, offset)
+        CONF_STOP = 8000
 
-        def match(t):
-            """(offset, score) titulku vs reference, nebo None."""
-            if not ref_txt or not t or "-->" not in t:
-                return None
-            return _best_offset(_srt_starts(_normalize_srt(t.encode("utf-8"))), _srt_starts(ref_txt))
-
-        GOOD = lambda r: r and r[1] >= 30 and abs(r[0]) <= 0.7
-
-        # ---- KANDIDATI UK: nejdriv lokalni, kdyz zadny nesedi tak stazene (top N) ----
-        best = None  # (text, off, score, label)
-
-        def consider(t, label):
+        def try_sync(text, label):
             nonlocal best
-            r = match(t)
-            if GOOD(r) and (best is None or r[1] > best[2]):
-                best = (t, r[0], r[1], label)
+            if not text or "-->" not in text:
+                return False
+            _sub_set(rel, "running", "Kontroluji podle zvuku filmu (%s)..." % label)
+            aligned, off, scale, score = _ffsync_to_audio(vfull, text)
+            if aligned and "-->" in aligned and score is not None:
+                if best is None or score > best[1]:
+                    best = (aligned, score, label, off or 0.0)
+                return score >= CONF_STOP
+            return False
 
-        uk_paths = _uk_srt_files(rel)
-        for ukr in uk_paths:
-            consider(_read_local_srt(ukr), "lokalni")
+        # 1) lokalni ukrajinske stopy
+        for ukr in _uk_srt_files(rel):
+            if try_sync(_read_local_srt(ukr), "lokalni titulek"):
+                break
+        # 2) stazene nativni ukrajinske (kdyz jeste nemame jistou shodu)
+        if not (best and best[1] >= CONF_STOP):
+            _sub_set(rel, "running", "Stahuji ukrajinske z OpenSubtitles...")
+            for t in opensub_candidates(imdbid, title, year, "ukr", 2):
+                if try_sync(t, "stazene ukrajinske"):
+                    break
+        # 3) preklad reference (lokalni CZ/EN, jinak stazene EN/CZ) - jen kdyz porad nejiste
+        if not (best and best[1] >= CONF_STOP):
+            src = sl = lbl = None
+            loc = _pick_translate_source(rel)
+            if loc:
+                rt = clean_srt(_read_local_srt(loc[0]) or "")
+                if "-->" in rt:
+                    src, sl, lbl = rt, loc[2], "preklad z: " + loc[1]
+            if not src:
+                en = opensub_best_srt(imdbid, title, year, "eng")
+                if en and "-->" in en:
+                    src, sl, lbl = clean_srt(en), "en", "preklad z anglictiny"
+            if not src:
+                cz = opensub_best_srt(imdbid, title, year, "cze")
+                if cz and "-->" in cz:
+                    src, sl, lbl = clean_srt(cz), "cs", "preklad z cestiny"
+            if src:
+                _sub_set(rel, "running", "Prekladam do ukrajinstiny a kontroluji podle zvuku...")
+                try_sync(translate_srt(src, sl, "uk"), lbl)
 
-        if best is None and ref_txt:
-            _sub_set(rel, "running", "Hledam nejlepe sedici ukrajinske na OpenSubtitles...")
-            for t in opensub_candidates(imdbid, title, year, "ukr", 4):
-                consider(t, "stazene")
-        elif not uk_paths and not ref_txt:
-            # bez reference i bez lokalni UK -> stahni aspon nativni (neoverene)
-            dl = opensub_best_srt(imdbid, title, year, "ukr")
-            if dl and "-->" in dl:
-                best = (dl, 0.0, 0, "stazene (neovereno)")
-
-        # ---- ROZHODNUTI ----
+        # ---- VYSLEDEK ----
         if best is not None:
             content = best[0]
-            if best[2] > 0:
-                note = "%s, posun %+.1f s, shoda %d" % (best[3], best[1], best[2])
-            else:
-                note = best[3]
-        elif ref_txt:
-            _sub_set(rel, "running", "Zadne sedici UK - prekladam " + ref_name + " do ukrajinstiny...")
-            tr = translate_srt(ref_txt, ref_sl, "uk")
-            content = tr if (tr and "-->" in tr) else None
-            note = "prelozene z: " + ref_name
+            conf = "vysoka" if best[1] >= 1500 else ("stredni" if best[1] >= 300 else "NIZKA - zkontroluj")
+            note = "%s, srovnano na zvuk (jistota: %s, posun %+.1f s)" % (best[2], conf, best[3])
         else:
+            # ffsubsync selhal na vsem -> vezmi aspon nejaky UK bez overeni
             content = None
-            note = None
+            for ukr in _uk_srt_files(rel):
+                t = _read_local_srt(ukr)
+                if t and "-->" in t:
+                    content = t
+                    break
+            if not content:
+                dl = opensub_best_srt(imdbid, title, year, "ukr")
+                content = dl if (dl and "-->" in dl) else None
+            note = "bez kontroly na zvuk (nepodarilo se overit)"
 
         if not content or "-->" not in content:
-            if uk_paths:
-                _finish_uk(rel, "Film uz ma ukrajinske titulky (nelze overit - bez reference).")
-            else:
-                _sub_set(rel, "failed", "Nepodarilo se ziskat zadne pouzitelne titulky.")
+            _sub_set(rel, "failed", "Nepodarilo se ziskat zadne pouzitelne titulky.")
             return
 
-        # ---- ZAPIS JEDEN KANONICKY .uk.srt, smaz stare UK varianty ----
-        for ukr in uk_paths:
-            p = os.path.realpath(os.path.join(MEDIA_ROOT, ukr.replace("/", os.sep)))
-            if p.startswith(os.path.realpath(MEDIA_ROOT) + os.sep) and os.path.isfile(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
-        with open(base + ".uk.srt", "w", encoding="utf-8") as f:
-            f.write(content)
+        _write_uk_canonical(rel, base, content)
         _finish_uk(rel, "Hotovo: ukrajinske titulky (" + note + ").")
     except Exception as e:
         _sub_set(rel, "failed", "Chyba: " + str(e)[:100])
@@ -2434,7 +2448,7 @@ def _subauto_worker(rel, mode="auto"):
 FINDSUB_JS = """
 function autoUK(){window._autoUK=true;
  var modes=['auto','en','cs'];var step=(window._ukStep||0);var mode=modes[step%3];window._ukStep=step+1;
- var msg=(mode==='auto')?'Shanim ukrajinske titulky...':(mode==='en')?'Zkousim jiny zdroj: stahuji anglicke a prekladam...':'Zkousim jiny zdroj: stahuji ceske a prekladam...';
+ var msg=(mode==='auto')?'Shanim a kontroluji titulky podle zvuku filmu (muze chvili trvat)...':(mode==='en')?'Zkousim jiny zdroj: stahuji anglicke, prekladam a srovnavam...':'Zkousim jiny zdroj: stahuji ceske, prekladam a srovnavam...';
  var s=document.getElementById('substat');if(s){s.style.display='block';s.textContent=msg;}
  fetch('/subauto?f='+encodeURIComponent(REL)+'&mode='+mode,{cache:'no-store'}).then(pollSub);}
 function selectUKTrack(){fetch('/sublist?f='+encodeURIComponent(REL),{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
@@ -2960,7 +2974,7 @@ video::cue{{background:rgba(0,0,0,.6);color:#fff;font-size:1.05em}}
 <div class="panel"><div class="card">
   <div class="ph">&#128172; Titulky<span class="cnt">{subcount}</span></div>
   <select id="subsel" onchange="setSub(this.value)">{options}</select>
-  <button class="actbig" onclick="autoUK()"><svg width="42" height="28" viewBox="0 0 42 28" style="flex:none"><clipPath id="ukr"><rect width="42" height="28" rx="4"/></clipPath><g clip-path="url(#ukr)"><rect width="42" height="14" fill="#005BBB"/><rect y="14" width="42" height="14" fill="#FFD500"/></g></svg><span>Ukrajinske titulky &ndash; vyres to<small>1. stisk = ukrajinske; dalsi stisk zkusi jiny zdroj (z anglictiny, pak z cestiny)</small></span></button>
+  <button class="actbig" onclick="autoUK()"><svg width="42" height="28" viewBox="0 0 42 28" style="flex:none"><clipPath id="ukr"><rect width="42" height="28" rx="4"/></clipPath><g clip-path="url(#ukr)"><rect width="42" height="14" fill="#005BBB"/><rect y="14" width="42" height="14" fill="#FFD500"/></g></svg><span>Ukrajinske titulky &ndash; vyres to<small>sam zkontroluje podle zvuku a pusti spravne; dalsi stisk = jiny zdroj (EN, pak CZ)</small></span></button>
   <div class="substat" id="substat"></div>
   <div class="shiftrow">
     <span class="shlab">&#9201; Casovani titulku (za behu):</span>
