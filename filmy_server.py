@@ -2833,6 +2833,7 @@ video::cue{{background:rgba(0,0,0,.6);color:#fff;font-size:1.05em}}
 .shbtn:active{{transform:scale(.96)}}
 .shbtn.rst{{color:#9fb4d6}}
 #shlbl{{min-width:64px;text-align:center;font-size:14px;font-weight:600;color:#8ee6b0}}
+.shhint{{margin-top:6px;font-size:11.5px;color:#7a8398;line-height:1.4}}
 .note{{margin-top:14px;font-size:13px;color:#8a93a6}}
 .note summary{{cursor:pointer;list-style:none;padding:8px 0}}
 .note summary::-webkit-details-marker{{display:none}}
@@ -2849,12 +2850,15 @@ video::cue{{background:rgba(0,0,0,.6);color:#fff;font-size:1.05em}}
   <button class="actbig" onclick="autoUK()"><svg width="42" height="28" viewBox="0 0 42 28" style="flex:none"><clipPath id="ukr"><rect width="42" height="28" rx="4"/></clipPath><g clip-path="url(#ukr)"><rect width="42" height="14" fill="#005BBB"/><rect y="14" width="42" height="14" fill="#FFD500"/></g></svg><span>Ukrajinske titulky &ndash; vyres to<small>stahne z OpenSubtitles, nebo prelozi ceske/anglicke</small></span></button>
   <div class="substat" id="substat"></div>
   <div class="shiftrow">
-    <span class="shlab">Doladit titulky:</span>
-    <button class="shbtn" onclick="nudge(-0.25)">&#9664; driv</button>
+    <span class="shlab">&#9201; Casovani titulku (za behu):</span>
+    <button class="shbtn" onclick="nudge(-1)" title="titulky o 1s driv">&#9664;&#9664; 1s</button>
+    <button class="shbtn" onclick="nudge(-0.25)" title="titulky driv">&#9664; 0.25</button>
     <span id="shlbl">0.00 s</span>
-    <button class="shbtn" onclick="nudge(0.25)">pozdeji &#9654;</button>
-    <button class="shbtn rst" onclick="resetShift()">&#8635;</button>
+    <button class="shbtn" onclick="nudge(0.25)" title="titulky pozdeji">0.25 &#9654;</button>
+    <button class="shbtn" onclick="nudge(1)" title="titulky o 1s pozdeji">1s &#9654;&#9654;</button>
+    <button class="shbtn rst" onclick="resetShift()" title="vynulovat">&#8635;</button>
   </div>
+  <div class="shhint">Kdyz titulky predbihaji, dej je &#8222;pozdeji&#8220; (&#9654;); kdyz se zpozduji, &#8222;driv&#8220; (&#9664;). Ulozi se k filmu.</div>
   <details class="note"><summary>&#9432; Video se neprehrava? (MKV / HEVC)</summary>
   <div class="nb">Prohlizec neumi <b>MKV/HEVC</b> &ndash; otevri ve <b>VLC</b>:<br>
   <span class="url">http://{get_lan_ip()}:{PORT}{enc}</span></div></details>
