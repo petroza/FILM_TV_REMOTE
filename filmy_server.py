@@ -1241,7 +1241,10 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:Segoe
 #idle p{font-size:2.2vw;margin:.4vh 0}
 #cap{margin-top:4vh;font-size:1.9vw;opacity:.75;line-height:1.6}
 #enable{position:fixed;top:0;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.88);color:#fff;font-size:3.5vw;text-align:center;z-index:9}
-video::cue{background:rgba(0,0,0,.55);color:#fff;font-size:2.4vw}
+/* vlastni vykreslovani titulku (obchazi Tizen bug s <track>) */
+#subov{position:fixed;left:0;right:0;bottom:7vh;z-index:4;text-align:center;padding:0 7vw;pointer-events:none;font-size:3vw;line-height:1.35;font-weight:600}
+#subov span{background:rgba(0,0,0,.5);color:#fff;padding:.2vh 1.2vw;border-radius:.5vw;text-shadow:.12vw .12vw .35vw #000;-webkit-box-decoration-break:clone;box-decoration-break:clone}
+#subov.off{display:none}
 #ctl{position:fixed;top:0;left:0;right:0;bottom:0;z-index:5;opacity:0;transition:opacity .3s;pointer-events:none}
 #ctl.show{opacity:1;pointer-events:auto}
 #ctop{position:absolute;top:0;left:0;right:0;padding:5vh 7vw 3vh;background:linear-gradient(180deg,#000d,#0000);color:#fff;font-size:2.8vw;font-weight:700}
@@ -1261,6 +1264,7 @@ video::cue{background:rgba(0,0,0,.55);color:#fff;font-size:2.4vw}
 .smitem.sel{background:#e50914;opacity:1}
 </style></head><body>
 <video id="tv" playsinline></video>
+<div id="subov" class="off"></div>
 <div id="idle">
   <h1>&#128250; FILMY &ndash; TV pripravena</h1>
   <p>Pust film z mobilu a objevi se tady.</p>
@@ -1288,12 +1292,37 @@ var v=document.getElementById('tv'),idle=document.getElementById('idle'),enable=
 var ctl=document.getElementById('ctl'),cpp=document.getElementById('cpp'),ctitle=document.getElementById('ctitle');
 var cnow=document.getElementById('cnow'),cdur=document.getElementById('cdur'),cfill=document.getElementById('cfill'),cknob=document.getElementById('cknob'),submenu=document.getElementById('submenu');
 var curVer=-1,curRel=null,curSeekVer=-1,curSub=-3,hideT=null,subsList=[],menuOpen=false,subFocus=-1,curSubShift=0,curSubsVer=-1,_emptyN=0;
-function buildTracks(){
- var olds=v.querySelectorAll('track');for(var k=olds.length-1;k>=0;k--)olds[k].remove();
- subsList.forEach(function(su){var tr=document.createElement('track');tr.kind='subtitles';tr.srclang='cs';tr.label=su.l;
-  tr.src=su.u+(curSubShift?((su.u.indexOf('?')>=0?'&':'?')+'shift='+curSubShift):'');v.appendChild(tr);});
- setTrack(curSub);
+// --- VLASTNI TITULKY: VTT stahneme, naparsujeme do pameti a kreslime sami do #subov.
+// Obchazi Tizen bug kdy <track> po v.load() 'upusti' titulky. Cue jsou v JS, takze
+// prezijou reload streamu i uspani; posun casu je okamzity (bez znovustahovani).
+var subov=document.getElementById('subov');
+var curCues=[],_loadedSub=-99,_lastCueTxt=null,_cueReqId=0;
+function _tc(x){var p=String(x).trim().split(':'),s=0;for(var i=0;i<p.length;i++)s=s*60+parseFloat(p[i].replace(',','.'));return s||0;}
+function parseVTT(txt){var out=[],lines=String(txt).replace(/\\r/g,'').split('\\n');
+ for(var i=0;i<lines.length;i++){var m=lines[i].indexOf('-->');
+  if(m<0)continue;
+  var s=_tc(lines[i].slice(0,m)),e=_tc(lines[i].slice(m+3).trim().split(/\\s+/)[0]),tx=[];
+  for(i++;i<lines.length&&lines[i].trim()!=='';i++)tx.push(lines[i]);
+  out.push({s:s,e:e,t:tx.join('\\n').replace(/<[^>]*>/g,'')});}
+ return out;}
+function loadCues(){
+ if(curSub<0||!subsList[curSub]){curCues=[];_lastCueTxt=null;renderCue();return;}
+ var rid=++_cueReqId,url=subsList[curSub].u;
+ fetch(url,{cache:'no-store'}).then(function(r){return r.text();}).then(function(t){
+  if(rid!==_cueReqId)return;curCues=parseVTT(t);_lastCueTxt=null;renderCue();
+ }).catch(function(){curCues=[];});
 }
+function renderCue(){
+ if(curSub<0||!curCues.length){if(subov.className!=='off'){subov.className='off';subov.textContent='';}_lastCueTxt=null;return;}
+ var t=(v.currentTime||0)-curSubShift,txt='';
+ for(var i=0;i<curCues.length;i++){if(t>=curCues[i].s&&t<=curCues[i].e){txt=curCues[i].t;break;}}
+ if(txt===_lastCueTxt)return;_lastCueTxt=txt;
+ if(txt){var esc=txt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').split('\\n');
+  subov.innerHTML='<span>'+esc.join('</span><br><span>')+'</span>';subov.className='';}
+ else{subov.className='off';subov.textContent='';}
+}
+// buildTracks = (znovu)nacti cue pro aktualne vybrane titulky (volano pri zmene filmu / titulku)
+function buildTracks(){_loadedSub=-99;setTrack(curSub);}
 try{
  var fsOK=!!(document.fullscreenEnabled||document.webkitFullscreenEnabled);
  var t=document.createElement('video');
@@ -1305,7 +1334,7 @@ function goFS(){var el=document.documentElement;if(!(document.fullscreenElement|
 function tryPlay(){var p=v.play();if(p&&p.catch){p.catch(function(){enable.style.display='flex';});}}
 function enableNow(){enable.style.display='none';goFS();v.play();}
 function fmt(s){s=Math.floor(s||0);if(!isFinite(s)||s<0)s=0;var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;return (h?h+':'+(m<10?'0':''):'')+m+':'+(x<10?'0':'')+x;}
-function setTrack(i){var tt=v.textTracks;for(var k=0;k<tt.length;k++){var w=(k===i)?'showing':'hidden';if(tt[k].mode!==w)tt[k].mode=w;}}
+function setTrack(i){curSub=i;if(i!==_loadedSub){_loadedSub=i;loadCues();}}
 function playing(){return !!v.getAttribute('src') && idle.style.display==='none';}
 function updPP(){cpp.innerHTML=v.paused?'&#9654;':'&#9208;';}
 function showCtl(){if(!playing())return;updPP();updTime();ctl.classList.add('show');if(hideT)clearTimeout(hideT);hideT=setTimeout(function(){if(!menuOpen)ctl.classList.remove('show');},5000);}
@@ -1320,8 +1349,8 @@ function moveSub(d){var mx=subsList.length-1;subFocus+=d;if(subFocus<-1)subFocus
 function applySub(){curSub=subFocus;setTrack(curSub);cmd('/cast/cmd?a=sub&i='+curSub);closeSub();}
 function closeSub(){menuOpen=false;submenu.style.display='none';showCtl();}
 v.addEventListener('play',updPP);v.addEventListener('pause',updPP);
-// titulky drz zapnute i behem prehravani (okamzita obnova, bez bliknuti)
-v.addEventListener('timeupdate',function(){if(v.getAttribute('src')&&curSub>=0)setTrack(curSub);});
+// vlastni titulky: prekresluj podle casu prehravani
+v.addEventListener('timeupdate',renderCue);
 document.getElementById('bmenu').addEventListener('click',function(e){e.stopPropagation();backMenu();});
 cpp.addEventListener('click',function(e){e.stopPropagation();togglePlay();showCtl();});
 document.getElementById('bsub').addEventListener('click',function(e){e.stopPropagation();openSub();});
@@ -1365,22 +1394,20 @@ function poll(){
    if(s.paused&&!v.paused)v.pause();
    if(!s.paused&&v.paused&&v.getAttribute('src'))tryPlay();
   }
-  // zmena posunu titulku (z ovladace) -> prenacti stopy s novym casovanim (video hraje dal)
-  if((s.subshift||0)!==curSubShift){curSubShift=s.subshift||0;if(subsList.length)buildTracks();}
-  // obnoveny seznam titulku (napr. po ffsubsync) -> prenacti stopy (video hraje dal)
+  // zmena posunu titulku (z ovladace) -> OKAMZITE prekresli (cue mame v pameti, netreba stahovat)
+  if((s.subshift||0)!==curSubShift){curSubShift=s.subshift||0;_lastCueTxt=null;renderCue();}
+  // obnoveny seznam titulku (napr. po vyres-to/ffsubsync) -> znovu nacti cue
   if(s.subsVer!==curSubsVer){curSubsVer=s.subsVer;subsList=s.subs||subsList;buildTracks();}
   if(s.seekVer!==curSeekVer){curSeekVer=s.seekVer;if(isFinite(s.seek)){try{v.currentTime=s.seek;}catch(e){}}}
-  // TITULKY DRZ ZAPNUTE porad (i kdyz je prohlizec resetuje nebo mobil odejde jinam)
+  // TITULKY DRZ VYBRANE porad (i kdyz mobil zmeni vyber) - nacte cue jen pri zmene
   if(v.getAttribute('src')&&curSub>=-1)setTrack(curSub);
-  // POJISTKA: titulek ma byt zapnuty, ale stopa nema nacteny zadny radek (spadl load)
-  // -> po ~8s prenacti stopy (video hraje dal). Brani "zapnuto ale prazdno".
-  if(curSub>=0&&v.textTracks[curSub]){var _tk=v.textTracks[curSub];
-   if(!_tk.cues||_tk.cues.length===0){if(++_emptyN>=8){_emptyN=0;if(subsList.length)buildTracks();}}else _emptyN=0;}
-  else _emptyN=0;
+  // POJISTKA: titulky maji byt zapnute, ale nemame zadne cue (spadl fetch) -> zkus znovu
+  if(curSub>=0&&!curCues.length){if(++_emptyN>=5){_emptyN=0;_loadedSub=curSub;loadCues();}}else _emptyN=0;
  }).catch(function(){});
 }
 var _lastOk=Date.now(),_t0=Date.now(),_shouldPlay=false,_playOk=Date.now();
 setInterval(poll,1000);poll();
+setInterval(renderCue,250);  // plynule titulky i kdyz je timeupdate na Tizenu ridky
 // okamzite znovupripojeni kdyz se TV probudi / vrati na zalozku
 document.addEventListener('visibilitychange',function(){if(!document.hidden){curVer=-1;curSeekVer=-1;_lastOk=Date.now();poll();}});
 window.addEventListener('online',poll);window.addEventListener('focus',poll);
