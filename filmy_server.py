@@ -2324,6 +2324,20 @@ _AUTOLANG = {
 _TEXT_SUB_CODECS = ("subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text")
 
 
+def _translate_retry(src, sl, tr, tries=2):
+    """translate_srt s opakovanim - jedno sitove skytnuti nema shodit automat."""
+    for i in range(tries):
+        try:
+            t = translate_srt(src, sl, tr)
+            if t and "-->" in t:
+                return t
+        except Exception:
+            pass
+        if i + 1 < tries:
+            time.sleep(2)
+    return None
+
+
 def _embedded_srt_candidates(vfull, tags, hints, limit=3):
     """Vytahne z kontejneru videa (MKV/MP4) vlozene titulkove stopy daneho jazyka
     (podle language tagu / nazvu stopy) a vrati je jako SRT texty.
@@ -2495,14 +2509,61 @@ def _lang_srt_files(rel, label="Ukrajinsky"):
     return out
 
 
-def _finish_uk(rel, msg):
-    """Dokonci: smaze cizi jazyky (nech jen CZ/EN/UK) a nastavi stav hotovo."""
+def _finish_lang(rel, msg, lang="uk"):
+    """Dokonci praci vlajkoveho automatu:
+    1) smaze cizi jazyky (nech jen CZ/EN/UK)
+    2) KONTROLA PO NASAZENI: overi, ze cilova stopa na disku existuje a ma cue
+    3) kdyz se tento film prave hraje na TV, SAM zapne cilove titulky
+       (nezavisi na otevrene strance mobilu)"""
+    cfg = _AUTOLANG.get(lang) or _AUTOLANG["uk"]
     try:
         n = _prune_foreign_subs(rel)
     except Exception:
         n = 0
     if n:
         msg += " Smazano %d cizich titulku (zustaly CZ/EN/UK)." % n
+
+    # 2) kontrola po nasazeni - stopa musi byt videt a mit radky
+    try:
+        subs = find_subtitles(rel)
+        tgt = next((s for s in subs if cfg["label"] in s["label"]
+                    and "srovn" in s["label"].lower()), None) \
+            or next((s for s in subs if cfg["label"] in s["label"]), None)
+        ncue = 0
+        if tgt:
+            raw = _read_local_srt(tgt["rel"]) or ""
+            ncue = srt_to_vtt(raw.encode("utf-8")).count("-->")
+        if not tgt or ncue < 5:
+            _sub_set(rel, "failed",
+                     "KONTROLA SELHALA: stopa se nenasadila spravne (%d radku). Zkus jiny zdroj dalsim stiskem." % ncue)
+            return
+        msg += " KONTROLA OK: '%s' nasazena (%d titulku)." % (tgt["label"], ncue)
+    except Exception:
+        tgt = None
+
+    # 3) auto-zapnuti na TV kdyz se tenhle film prave hraje (cast)
+    try:
+        enabled = False
+        if tgt is not None and cast_snapshot(_cast).get("rel") == rel:
+            subs2 = find_subtitles(rel)  # IO mimo zamek
+            idx = next((i for i, s in enumerate(subs2) if cfg["label"] in s["label"]
+                        and "srovn" in s["label"].lower()), None)
+            if idx is None:
+                idx = next((i for i, s in enumerate(subs2) if cfg["label"] in s["label"]), None)
+            if idx is not None:
+                with _cast_lock:
+                    if _cast.get("rel") == rel:
+                        _cast["subs"] = [{"u": vtt_url(s["rel"]), "l": s["label"]} for s in subs2]
+                        _cast["sub"] = idx
+                        _cast["subsVer"] += 1
+                        _cast["ver"] += 1
+                        enabled = True
+                if enabled:
+                    _save_cast()
+        if enabled:
+            msg += " Zapnuto na TV."
+    except Exception:
+        pass
     _sub_set(rel, "done", msg)
 
 
@@ -2549,9 +2610,9 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                 _sub_set(rel, "failed", "Na OpenSubtitles nejsou " + nm + " titulky.")
                 return
             _sub_set(rel, "running", "Prekladam do " + cfg["gen"] + "...")
-            out = translate_srt(clean_srt(src), sl, cfg["tr"])
-            if not out or "-->" not in out:
-                _sub_set(rel, "failed", "Preklad se nepodaril.")
+            out = _translate_retry(clean_srt(src), sl, cfg["tr"])
+            if not out:
+                _sub_set(rel, "failed", "Preklad se nepodaril (ani na 2. pokus).")
                 return
             # srovnej i preklad na zvuk videa (spravne casovani)
             _sub_set(rel, "running", "Kontroluji podle zvuku filmu...")
@@ -2561,7 +2622,7 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                 out = aligned
                 extra = " (srovnano na zvuk, posun %+.1f s)" % (off or 0.0)
             _write_lang_canonical(rel, base, out, lang)
-            _finish_uk(rel, "Hotovo: " + cfg["name"] + " titulky (prelozene ze stazenych " + nm + ")" + extra + ".")
+            _finish_lang(rel, "Hotovo: " + cfg["name"] + " titulky (prelozene ze stazenych " + nm + ")" + extra + ".", lang)
             return
 
         # ==== CHYTRA AUTO-DIAGNOSTIKA ====
@@ -2596,7 +2657,7 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
         # 2) stazene nativni (kdyz jeste nemame jistou shodu)
         if not (best and best[1] >= CONF_STOP):
             _sub_set(rel, "running", "Stahuji " + cfg["name"] + " z OpenSubtitles...")
-            for t in opensub_candidates(imdbid, title, year, cfg["lang3"], 2):
+            for t in opensub_candidates(imdbid, title, year, cfg["lang3"], 3):
                 if try_sync(t, "stazene " + cfg["name"]):
                     break
         # 3) preklad reference (lokalni, jinak stazena) - jen kdyz porad nejiste
@@ -2622,7 +2683,7 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                         break
             if src:
                 _sub_set(rel, "running", "Prekladam do " + cfg["gen"] + " a kontroluji podle zvuku...")
-                try_sync(translate_srt(src, sl, cfg["tr"]), lbl)
+                try_sync(_translate_retry(src, sl, cfg["tr"]), lbl)
 
         # ---- VYSLEDEK ----
         if best is not None:
@@ -2630,7 +2691,8 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
             conf = "vysoka" if best[1] >= 1500 else ("stredni" if best[1] >= 300 else "NIZKA - zkontroluj")
             note = "%s, srovnano na zvuk (jistota: %s, posun %+.1f s)" % (best[2], conf, best[3])
         else:
-            # ffsubsync selhal na vsem -> vezmi aspon neco bez overeni
+            # ffsubsync selhal na vsem -> DRUHA KONTROLNI METODA: zarovnani
+            # podle mistnich titulku jineho jazyka (kdyz jsou); az pak bez overeni
             content = None
             for loc_rel in _lang_srt_files(rel, cfg["label"]):
                 t = _read_local_srt(loc_rel)
@@ -2641,25 +2703,39 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                 dl = opensub_best_srt(imdbid, title, year, cfg["lang3"])
                 content = dl if (dl and "-->" in dl) else None
             note = "bez kontroly na zvuk (nepodarilo se overit)"
+            if content:
+                ref = _pick_translate_source(rel, lang)
+                ref_text = clean_srt(_read_local_srt(ref[0]) or "") if ref else ""
+                if "-->" in ref_text:
+                    _sub_set(rel, "running", "Zvukova kontrola nesla - srovnavam podle mistnich titulku...")
+                    al = _align_to_reference(content, ref_text)
+                    if al:
+                        content = al[0]
+                        note = "srovnano podle mistnich titulku %s (posun %+.1f s)" % (ref[1], al[2])
 
         if not content or "-->" not in content:
             _sub_set(rel, "failed", "Nepodarilo se ziskat zadne pouzitelne titulky.")
             return
 
         _write_lang_canonical(rel, base, content, lang)
-        _finish_uk(rel, "Hotovo: " + cfg["name"] + " titulky (" + note + ").")
+        _finish_lang(rel, "Hotovo: " + cfg["name"] + " titulky (" + note + ").", lang)
     except Exception as e:
         _sub_set(rel, "failed", "Chyba: " + str(e)[:100])
 
 
 FINDSUB_JS = """
-function autoLang(lang){window._autoLang=lang;
+function autoLang(lang){var prev=window._autoLang;window._autoLang=lang;
  var modes=(lang==='cs')?['auto','en']:['auto','en','cs'];
  var key='_step_'+lang;var step=(window[key]||0);var mode=modes[step%modes.length];window[key]=step+1;
  var nm=(lang==='cs')?'ceske':'ukrajinske';
  var msg=(mode==='auto')?('Shanim a kontroluji '+nm+' titulky podle zvuku filmu (muze chvili trvat)...'):(mode==='en')?'Zkousim jiny zdroj: stahuji anglicke, prekladam a srovnavam...':'Zkousim jiny zdroj: stahuji ceske, prekladam a srovnavam...';
  var s=document.getElementById('substat');if(s){s.style.display='block';s.textContent=msg;}
- fetch('/subauto?f='+encodeURIComponent(REL)+'&mode='+mode+'&lang='+lang,{cache:'no-store'}).then(pollSub);}
+ fetch('/subauto?f='+encodeURIComponent(REL)+'&mode='+mode+'&lang='+lang,{cache:'no-store'})
+ .then(function(r){return r.json();}).then(function(j){
+  if(j&&j.already){window._autoLang=prev;window[key]=step;
+   if(s)s.textContent='U tohoto filmu prave probiha jina kontrola - pockej na jeji dokonceni.';}
+  pollSub();
+ }).catch(function(){pollSub();});}
 function autoUK(){autoLang('uk');}
 function selectLangTrack(lang){var needle=(lang==='cs')?'cesk':'ukrajin';
  fetch('/sublist?f='+encodeURIComponent(REL),{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
@@ -2854,7 +2930,7 @@ class Handler(BaseHTTPRequestHandler):
                 _subjobs[rel] = {"state": "running", "msg": "Spoustim..."}
         if not running:
             threading.Thread(target=_subauto_worker, args=(rel, mode, lang), daemon=True).start()
-        self.send_json({"ok": True})
+        self.send_json({"ok": True, "already": running})
 
     # ---------- Dohledani + preklad titulku ----------
     def sub_fetch(self, query):
