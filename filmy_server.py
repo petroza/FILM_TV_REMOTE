@@ -2312,11 +2312,65 @@ def _align_to_reference(sub_text, ref_text):
 _AUTOLANG = {
     "uk": {"label": "Ukrajinsky", "lang3": "ukr", "ext": ".uk.srt", "tr": "uk",
            "name": "ukrajinske", "gen": "ukrajinstiny",
+           "tags": ("ukr", "uk"), "hints": ("ukra", "укра"),
            "fallback": [("eng", "en", "anglictiny"), ("cze", "cs", "cestiny")]},
     "cs": {"label": "Cesky", "lang3": "cze", "ext": ".cs.srt", "tr": "cs",
            "name": "ceske", "gen": "cestiny",
+           "tags": ("cze", "ces", "cs"), "hints": ("czech", "cesk", "češ", "čes"),
            "fallback": [("eng", "en", "anglictiny")]},
 }
+
+# textove titulkove kodeky, ktere jde prevest na SRT (bitmapove pgs/dvdsub ne)
+_TEXT_SUB_CODECS = ("subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text")
+
+
+def _embedded_srt_candidates(vfull, tags, hints, limit=3):
+    """Vytahne z kontejneru videa (MKV/MP4) vlozene titulkove stopy daneho jazyka
+    (podle language tagu / nazvu stopy) a vrati je jako SRT texty.
+    Bitmapove titulky (PGS/DVD) prevest nejde - preskakuji se."""
+    out = []
+    try:
+        import static_ffmpeg
+        static_ffmpeg.add_paths()
+        import shutil as _sh
+        fp, fm = _sh.which("ffprobe"), _sh.which("ffmpeg")
+        if not (fp and fm and os.path.isfile(vfull)):
+            return out
+        r = subprocess.run([fp, "-v", "error", "-select_streams", "s",
+                            "-show_entries", "stream=index,codec_name:stream_tags=language,title",
+                            "-of", "json", vfull],
+                           capture_output=True, text=True, timeout=30)
+        streams = (json.loads(r.stdout or "{}") or {}).get("streams", [])
+    except Exception:
+        return out
+    for st in streams:
+        if len(out) >= limit:
+            break
+        codec = (st.get("codec_name") or "").lower()
+        if codec not in _TEXT_SUB_CODECS:
+            continue
+        stags = st.get("tags") or {}
+        tlang = (stags.get("language") or "").lower()
+        title = (stags.get("title") or "").lower()
+        if not (tlang in tags or any(h in title for h in hints)):
+            continue
+        idx = st.get("index")
+        if idx is None:
+            continue
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                dst = os.path.join(td, "e.srt")
+                subprocess.run([fm, "-y", "-v", "error", "-i", vfull,
+                                "-map", "0:%d" % idx, "-f", "srt", dst],
+                               capture_output=True, timeout=120)
+                if os.path.isfile(dst) and os.path.getsize(dst) > 200:
+                    with open(dst, "rb") as f:
+                        t = f.read().decode("utf-8", "replace")
+                    if "-->" in t:
+                        out.append(t)
+        except Exception:
+            continue
+    return out
 
 
 def _pick_translate_source(rel, target="uk"):
@@ -2533,6 +2587,12 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
         for loc_rel in _lang_srt_files(rel, cfg["label"]):
             if try_sync(_read_local_srt(loc_rel), "lokalni titulek"):
                 break
+        # 1b) titulky vlozene primo ve videu (MKV/MP4 stopy ciloveho jazyka)
+        if not (best and best[1] >= CONF_STOP):
+            _sub_set(rel, "running", "Hledam titulky vlozene ve videu...")
+            for t in _embedded_srt_candidates(vfull, cfg["tags"], cfg["hints"]):
+                if try_sync(t, "vlozeny titulek z videa"):
+                    break
         # 2) stazene nativni (kdyz jeste nemame jistou shodu)
         if not (best and best[1] >= CONF_STOP):
             _sub_set(rel, "running", "Stahuji " + cfg["name"] + " z OpenSubtitles...")
@@ -2547,6 +2607,13 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                 rt = clean_srt(_read_local_srt(loc[0]) or "")
                 if "-->" in rt:
                     src, sl, lbl = rt, loc[2], "preklad z: " + loc[1]
+            if not src:
+                # anglicka stopa vlozena ve videu = perfektne nacasovany zdroj prekladu
+                for t in _embedded_srt_candidates(vfull, ("eng", "en"), ("english",), 1):
+                    rt = clean_srt(t)
+                    if "-->" in rt:
+                        src, sl, lbl = rt, "en", "preklad z anglickych vlozenych ve videu"
+                        break
             if not src:
                 for fb3, fbsl, fbname in cfg["fallback"]:
                     dl = opensub_best_srt(imdbid, title, year, fb3)
