@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ----------------- CONFIG -----------------
 # Folder with your videos. Edit it here, or set the FILMY_ROOT environment variable.
-MEDIA_ROOT = os.environ.get("FILMY_ROOT") or r"C:\FILMY"
+MEDIA_ROOT = os.environ.get("FILMY_ROOT") or r"D:\FILMY\SDILENE"
 PORT = int(os.environ.get("FILMY_PORT", "8099"))
 # Optional OMDb key = one extra IMDb-rating source. Posters + ratings work WITHOUT it.
 # Free key (optional): https://www.omdbapi.com/apikey.aspx
@@ -1526,6 +1526,10 @@ def page_remote_html(rel, sub):
         '<span>Ceske'
         '<small style="display:block;font-size:10.5px;font-weight:400;opacity:.72;margin-top:2px">stahne, overi na zvuk, zapne</small></span></button>'
         '</div>'
+        '<div style="display:flex;gap:8px;margin:8px 0 2px">'
+        '<button onclick="aiLang(\'uk\')" style="flex:1;padding:11px 5px;border-radius:12px;border:1px solid #3578b9;background:#122a43;color:#fff;font-size:12px;font-weight:700;cursor:pointer">&#129302; AI &#8594; ukrajinsky<small style="display:block;font-size:9.5px;font-weight:400;opacity:.72;margin-top:2px">primo z anglickeho zvuku</small></button>'
+        '<button onclick="aiLang(\'cs\')" style="flex:1;padding:11px 5px;border-radius:12px;border:1px solid #a35b68;background:#3a1720;color:#fff;font-size:12px;font-weight:700;cursor:pointer">&#129302; AI &#8594; cesky<small style="display:block;font-size:9.5px;font-weight:400;opacity:.72;margin-top:2px">primo z anglickeho zvuku</small></button>'
+        '</div>'
         '<div class="substat" id="substat"></div>'
         '<div class="shiftrow2"><span class="lab">&#9201; Casovani titulku (na TV):</span>'
         '<button onclick="rnudge(-1)">&#9664;&#9664; 1s</button>'
@@ -1534,9 +1538,6 @@ def page_remote_html(rel, sub):
         '<button onclick="rnudge(0.25)">0.25 &#9654;</button>'
         '<button onclick="rnudge(1)">1s &#9654;&#9654;</button>'
         '<button onclick="rresetShift()">&#8635;</button></div>'
-        '<button onclick="syncVid()" style="width:100%;margin:8px 0 2px;padding:13px;border-radius:12px;'
-        'border:1px solid #7e5a2f;background:#241c10;color:#f0d9b0;font-size:14px;cursor:pointer">'
-        '&#127919; Srovnat vybrany titulek podle zvuku (experiment.)</button>'
         '<a class="stop" href="javascript:void(0)" onclick="stopTv()">&#9209; Zastavit na TV</a>'
         '<div class="hint">Mobil je dalkove ovladani &ndash; film hraje na TV. '
         'Kdyby na TV nic nebylo, otevri na TV adresu <b>/tv</b>.</div>'
@@ -1600,13 +1601,70 @@ _subjobs = {}
 _subjobs_lock = threading.Lock()
 
 
+_EPISODE_TAG_RE = re.compile(r"\bS(\d{1,2})E(\d{1,3})\b", re.I)
+_opensub_hash_cache = {}
+
+
+def _opensub_episode_query(title):
+    """Vrati presny dotaz pro serialovou epizodu, jinak prazdny retezec.
+
+    IMDb metadata u serialu casto obsahuji ID celeho poradu. Hledani pouze podle
+    takoveho ID vrati nejstahovanejsi titulky z libovolne epizody. V nazvu souboru
+    ale mame SxxExx a obvykle i jmeno epizody, takze je pro OpenSubtitles presnejsi.
+    """
+    title = (title or "").strip()
+    if not _EPISODE_TAG_RE.search(title):
+        return ""
+    # Nektere exporty opakuji na konci nazev poradu:
+    # "Star Trek Short Treks S01E01 Runaway - Star Trek Short Treks".
+    if " - " in title:
+        head, tail = title.rsplit(" - ", 1)
+        before_tag = _EPISODE_TAG_RE.split(head, maxsplit=1)[0]
+        if _norm_title_words(tail) and _norm_title_words(tail) <= _norm_title_words(before_tag):
+            title = head
+    return re.sub(r"\s{2,}", " ", title).strip()
+
+
+def _opensub_moviehash(video):
+    """Standardni 64bit OpenSubtitles hash; cte jen zacatek a konec videa."""
+    if not video or not os.path.isfile(video):
+        return ""
+    try:
+        size = os.path.getsize(video)
+        mtime = os.path.getmtime(video)
+        key = (os.path.realpath(video), size, mtime)
+        if key in _opensub_hash_cache:
+            return _opensub_hash_cache[key]
+        if size < 131072:
+            return ""
+        value = size
+        with open(video, "rb") as f:
+            for pos in (0, size - 65536):
+                f.seek(pos)
+                chunk = f.read(65536)
+                for i in range(0, len(chunk) - 7, 8):
+                    value = (value + int.from_bytes(chunk[i:i + 8], "little")) & 0xffffffffffffffff
+        result = "%016x" % value
+        _opensub_hash_cache.clear()
+        _opensub_hash_cache[key] = result
+        return result
+    except OSError:
+        return ""
+
+
 def opensub_search(imdbid, title, lang):
     """Hleda titulky na OpenSubtitles (bez klice). lang = cze/eng. Vraci serazeny seznam."""
     urls = []
+    episode_query = _opensub_episode_query(title)
+    # U epizody musi byt presny textovy dotaz prvni. IMDb ID muze byt jen ID
+    # celeho serialu a legacy API by jinak vratilo prvni popularni jinou epizodu.
+    if episode_query:
+        urls.append("https://rest.opensubtitles.org/search/query-"
+                    + urllib.parse.quote(episode_query) + "/sublanguageid-" + lang)
     if imdbid:
         urls.append("https://rest.opensubtitles.org/search/imdbid-"
                     + imdbid.replace("tt", "") + "/sublanguageid-" + lang)
-    if title:
+    if title and not episode_query:
         urls.append("https://rest.opensubtitles.org/search/query-"
                     + urllib.parse.quote(title) + "/sublanguageid-" + lang)
     for url in urls:
@@ -1622,9 +1680,25 @@ def opensub_search(imdbid, title, lang):
             srt_only = [x for x in data if str(x.get("SubFormat", "")).lower() == "srt"]
             use = srt_only or data
 
+            # Legacy API ignoruje cast query a u serialu vraci vsechny epizody.
+            # Kdyz z nazvu zname jmeno epizody, ponech jen vysledky, ktere ho
+            # opravdu obsahuji v release nebo nazvu titulku.
+            if episode_query:
+                em = _EPISODE_TAG_RE.search(episode_query)
+                episode_words = _norm_title_words(episode_query[em.end():]) if em else set()
+                if episode_words:
+                    exact = []
+                    for x in use:
+                        words = _norm_title_words((x.get("MovieReleaseName") or "") + " "
+                                                  + (x.get("SubFileName") or ""))
+                        if episode_words <= words:
+                            exact.append(x)
+                    if exact:
+                        use = exact
+
             def dc(x):
                 try:
-                    return int(x.get("SubDownloadsCount") or 0)
+                    return int(x.get("SubDownloadsCount") or x.get("SubDownloadsCnt") or 0)
                 except (ValueError, TypeError):
                     return 0
             use.sort(key=dc, reverse=True)
@@ -1750,35 +1824,52 @@ def _os_login():
         return _os_token
 
 
-def opensub2_search(imdbid, title, year, lang3):
+def opensub2_search(imdbid, title, year, lang3, video=None):
     """Nova API: vrati seznam file_id pro dany jazyk, serazeny podle stazeni."""
     if not OS_API_KEY:
         return []
     lang = _OS_LANG.get(lang3, lang3)
     params = {"languages": lang, "order_by": "download_count", "order_direction": "desc"}
+    def fetch_ids(search_params):
+        url = _OS_BASE + "/subtitles?" + urllib.parse.urlencode(search_params)
+        try:
+            req = urllib.request.Request(url, headers=_os_headers())
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception:
+            return []
+        found = []
+        for item in (data.get("data") or []):
+            at = item.get("attributes") or {}
+            for f in (at.get("files") or []):
+                fid = f.get("file_id")
+                if fid:
+                    found.append(fid)
+        return found
+
+    # Hash konkretniho videosouboru je nejpresnejsi identifikace releasu a
+    # obchazi i chybne popsane epizody v katalogu OpenSubtitles.
+    moviehash = _opensub_moviehash(video)
+    if moviehash:
+        exact = fetch_ids({"languages": lang, "moviehash": moviehash,
+                           "order_by": "download_count", "order_direction": "desc"})
+        if exact:
+            return exact
+
+    episode_query = _opensub_episode_query(title)
     if imdbid:
         params["imdb_id"] = str(imdbid).replace("tt", "")
+        # IMDb muze oznacovat cely serial. Kombinace s SxxExx + nazvem epizody
+        # omezi vysledky na spravnou epizodu (napr. Short Treks / Runaway).
+        if episode_query:
+            params["query"] = episode_query
     elif title:
         params["query"] = title
         if year:
             params["year"] = str(year)
     else:
         return []
-    url = _OS_BASE + "/subtitles?" + urllib.parse.urlencode(params)
-    try:
-        req = urllib.request.Request(url, headers=_os_headers())
-        with urllib.request.urlopen(req, timeout=15) as r:
-            d = json.loads(r.read().decode("utf-8", "replace"))
-    except Exception:
-        return []
-    ids = []
-    for item in (d.get("data") or []):
-        at = item.get("attributes") or {}
-        for f in (at.get("files") or []):
-            fid = f.get("file_id")
-            if fid:
-                ids.append(fid)
-    return ids
+    return fetch_ids(params)
 
 
 def opensub2_download_srt(file_id):
@@ -1821,25 +1912,25 @@ def _resolve_imdb(imdbid, title, year):
     return iid
 
 
-def opensub_best_srt(imdbid, title, year, lang3):
+def opensub_best_srt(imdbid, title, year, lang3, video=None):
     """Nejlepsi ocisteny SRT pro jazyk (cze/eng/ukr): nejdriv nova API (kdyz je klic
     a login), pak fallback na legacy rest.opensubtitles.org. IMDb id si sam dohleda."""
     iid = _resolve_imdb(imdbid, title, year)
     if OS_API_KEY and (OS_TOKEN or (OS_USERNAME and OS_PASSWORD)):
-        for fid in opensub2_search(iid, title, year, lang3)[:4]:
+        for fid in opensub2_search(iid, title, year, lang3, video)[:4]:
             t = opensub2_download_srt(fid)
             if t and "-->" in t:
                 return clean_srt(t)
     return _first_srt(opensub_search(iid, title, lang3))
 
 
-def opensub_candidates(imdbid, title, year, lang3, n=4):
+def opensub_candidates(imdbid, title, year, lang3, n=4, video=None):
     """Vrati az n ocistenych SRT kandidatu daneho jazyka (pro vyber nejlepe
     sedici verze). Nova API kdyz je klic+login, jinak legacy."""
     iid = _resolve_imdb(imdbid, title, year)
     out = []
     if OS_API_KEY and (OS_TOKEN or (OS_USERNAME and OS_PASSWORD)):
-        for fid in opensub2_search(iid, title, year, lang3)[:n]:
+        for fid in opensub2_search(iid, title, year, lang3, video)[:n]:
             t = opensub2_download_srt(fid)
             if t and "-->" in t:
                 out.append(clean_srt(t))
@@ -1936,7 +2027,7 @@ def _subfetch_worker(rel):
         # 1) ceske titulky (kdyz jeste nejsou)
         if not has_cz:
             _sub_set(rel, "running", "Hledam ceske titulky...")
-            srt = opensub_best_srt(imdbid, title, year, "cze")
+            srt = opensub_best_srt(imdbid, title, year, "cze", vfull)
             if srt:
                 with open(_safe_target(base, "cs"), "w", encoding="utf-8") as f:
                     f.write(srt)
@@ -1944,7 +2035,7 @@ def _subfetch_worker(rel):
         # 2) ukrajinske titulky (kdyz jeste nejsou)
         if not has_uk:
             _sub_set(rel, "running", "Hledam ukrajinske titulky...")
-            srt = opensub_best_srt(imdbid, title, year, "ukr")
+            srt = opensub_best_srt(imdbid, title, year, "ukr", vfull)
             if srt:
                 with open(_safe_target(base, "uk"), "w", encoding="utf-8") as f:
                     f.write(srt)
@@ -1952,7 +2043,7 @@ def _subfetch_worker(rel):
             else:
                 # zaloha: anglicke -> preklad do ukrajinstiny
                 _sub_set(rel, "running", "Ukrajinske nejsou, prekladam z anglictiny...")
-                en = opensub_best_srt(imdbid, title, year, "eng")
+                en = opensub_best_srt(imdbid, title, year, "eng", vfull)
                 if en:
                     uk = translate_srt(en, "en", "uk")
                     with open(_safe_target(base, "uk"), "w", encoding="utf-8") as f:
@@ -2341,6 +2432,53 @@ def _translate_retry(src, sl, tr, tries=2):
     return None
 
 
+def _video_duration_seconds(vfull):
+    """Duration for AI progress only; transcription also works if probing fails."""
+    try:
+        import static_ffmpeg
+        static_ffmpeg.add_paths()
+        import shutil as _sh
+        fp = _sh.which("ffprobe")
+        if not fp:
+            return 0.0
+        r = subprocess.run([fp, "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=noprint_wrappers=1:nokey=1", vfull],
+                           capture_output=True, text=True, timeout=30)
+        return max(0.0, float((r.stdout or "0").strip()))
+    except Exception:
+        return 0.0
+
+
+def _ai_subtitles_from_audio(rel, vfull, lang="uk"):
+    """Create subtitles from this exact audio; return translated SRT or None.
+
+    Imported lazily so the media server starts normally even when the optional
+    AI dependency is not installed or the GPU is temporarily unavailable.
+    """
+    cfg = _AUTOLANG.get(lang) or _AUTOLANG["uk"]
+    try:
+        from ai_subtitle_worker import transcribe_english
+
+        def report(message):
+            _sub_set(rel, "running", message)
+
+        source_srt, meta = transcribe_english(
+            vfull, duration=_video_duration_seconds(vfull), status=report)
+        if not source_srt or "-->" not in source_srt:
+            return None
+        _sub_set(rel, "running", "AI: prekladam %d vet do %s..." %
+                 (meta.get("cues", 0), cfg["gen"]))
+        translated = _translate_retry(source_srt, "en", cfg["tr"], tries=3)
+        if not translated or "-->" not in translated:
+            raise RuntimeError("preklad AI prepisu se nepodaril")
+        return translated
+    except Exception as exc:
+        print("  AI TITULKY selhaly pro %s: %s" % (rel, exc))
+        _sub_set(rel, "running", "AI titulky se nepodarily (%s), pouziji nejlepsi zalozni zdroj..." %
+                 str(exc)[:70])
+        return None
+
+
 def _embedded_srt_candidates(vfull, tags, hints, limit=3):
     """Vytahne z kontejneru videa (MKV/MP4) vlozene titulkove stopy daneho jazyka
     (podle language tagu / nazvu stopy) a vrati je jako SRT texty.
@@ -2597,7 +2735,8 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
     """VLAJKOVE tlacitko: zajisti titulky ciloveho jazyka (uk/cs) s overenim
     proti zvuku filmu. mode='auto' = chytra diagnostika (lokalni -> stazene
     nativni -> preklad reference); opakovany stisk posle vynuceny zdroj
-    mode='en'/'cs' (stahni a preloz) kdyz prvni vysledek nesedi."""
+    mode='ai' vytvori casovani primo ze zvuku; mode='en'/'cs' vynuti
+    stazeni a preklad, kdyz prvni vysledek nesedi."""
     try:
         cfg = _AUTOLANG.get(lang) or _AUTOLANG["uk"]
         _reload_os_config()
@@ -2605,6 +2744,19 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
         base = os.path.splitext(vfull)[0]
         if not os.path.isfile(vfull):
             _sub_set(rel, "failed", "Video nenalezeno.")
+            return
+
+        # Druhy stisk ukrajinskeho tlacitka: obejdi vsechny katalogy a vytvor
+        # casovani z konkretni zvukove stopy. To resi i titulky k jine epizode,
+        # ktere mohou mit technicky "stabilni" posun, ale nespravny obsah.
+        if mode == "ai":
+            out = _ai_subtitles_from_audio(rel, vfull, lang)
+            if not out:
+                _sub_set(rel, "failed", "AI titulky se nepodarilo vytvorit.")
+                return
+            _write_lang_canonical(rel, base, out, lang)
+            _finish_lang(rel, "Hotovo: " + cfg["name"] +
+                         " titulky vytvorene AI primo z anglickeho zvuku.", lang)
             return
         title, year = clean_title(rel)
         m = get_meta(rel)
@@ -2616,7 +2768,7 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
         if mode in ("en", "cs"):
             lang3, sl, nm = ("eng", "en", "anglicke") if mode == "en" else ("cze", "cs", "ceske")
             _sub_set(rel, "running", "Stahuji " + nm + " titulky a prekladam do " + cfg["gen"] + "...")
-            src = opensub_best_srt(imdbid, title, year, lang3)
+            src = opensub_best_srt(imdbid, title, year, lang3, vfull)
             if not src or "-->" not in src:
                 _sub_set(rel, "failed", "Na OpenSubtitles nejsou " + nm + " titulky.")
                 return
@@ -2678,7 +2830,7 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
         # 2) stazene nativni (kdyz jeste nemame jistou shodu)
         if not (best and best[1] >= CONF_STOP):
             _sub_set(rel, "running", "Stahuji " + cfg["name"] + " z OpenSubtitles...")
-            for t in opensub_candidates(imdbid, title, year, cfg["lang3"], 3):
+            for t in opensub_candidates(imdbid, title, year, cfg["lang3"], 3, vfull):
                 if try_sync(t, "stazene " + cfg["name"]):
                     break
         # 3) preklad reference (lokalni, jinak stazena) - jen kdyz porad nejiste
@@ -2698,7 +2850,7 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                         break
             if not src:
                 for fb3, fbsl, fbname in cfg["fallback"]:
-                    dl = opensub_best_srt(imdbid, title, year, fb3)
+                    dl = opensub_best_srt(imdbid, title, year, fb3, vfull)
                     if dl and "-->" in dl:
                         src, sl, lbl = clean_srt(dl), fbsl, "preklad z " + fbname
                         break
@@ -2754,6 +2906,13 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                 if content is None:
                     content = best[4]  # puvodni casovani kandidata (bez zvukoveho posunu)
                     note = "%s s puvodnim casovanim (zvukove mereni u tohoto filmu neni spolehlive - pripadne dolad rucne)" % best[2]
+                # Kdyz je zvukove posouvani prokazatelne nestabilni, nejjistejsi
+                # casovani vytvori Whisper primo z tohoto konkretniho zvuku.
+                if lang == "uk":
+                    ai_content = _ai_subtitles_from_audio(rel, vfull, lang)
+                    if ai_content:
+                        content = ai_content
+                        note = "AI prepis primo z anglickeho zvuku (presne casovani pro tento soubor)"
         else:
             # ffsubsync selhal na vsem -> DRUHA KONTROLNI METODA: zarovnani
             # podle mistnich titulku jineho jazyka (kdyz jsou); az pak bez overeni
@@ -2768,7 +2927,7 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                 content = translated
                 note = "%s, bez zvukove kontroly" % translated_lbl
             elif not content:
-                dl = opensub_best_srt(imdbid, title, year, cfg["lang3"])
+                dl = opensub_best_srt(imdbid, title, year, cfg["lang3"], vfull)
                 content = dl if (dl and "-->" in dl) else None
                 note = "bez kontroly na zvuk (nepodarilo se overit)"
             else:
@@ -2783,6 +2942,14 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                         content = al[0]
                         note = "srovnano podle mistnich titulku %s (posun %+.1f s)" % (ref[1], al[2])
 
+            # Zadny kandidat neslo zvukem spolehlive potvrdit. Pro ukrajinske
+            # titulky dej prednost prepisu skutecne zvukove stopy pred dohadem.
+            if lang == "uk":
+                ai_content = _ai_subtitles_from_audio(rel, vfull, lang)
+                if ai_content:
+                    content = ai_content
+                    note = "AI prepis primo z anglickeho zvuku (presne casovani pro tento soubor)"
+
         if not content or "-->" not in content:
             _sub_set(rel, "failed", "Nepodarilo se ziskat zadne pouzitelne titulky.")
             return
@@ -2794,19 +2961,33 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
 
 
 FINDSUB_JS = """
+function showSubStatus(msg,state){var s=document.getElementById('substat');if(!s)return;
+ s.style.display='block';var text=s.querySelector('.submsg');var track=s.querySelector('.subprogress');var fill=s.querySelector('.subprogressfill');
+ if(!text){s.textContent='';text=document.createElement('div');text.className='submsg';s.appendChild(text);track=document.createElement('div');track.className='subprogress';track.style.cssText='height:8px;margin-top:8px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,.12);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)';fill=document.createElement('div');fill.className='subprogressfill';fill.style.cssText='height:100%;width:0;border-radius:8px;background:linear-gradient(90deg,#2389ff,#29d5c0);box-shadow:0 0 10px rgba(41,213,192,.45);transition:width .45s ease';track.appendChild(fill);s.appendChild(track);}
+ text.textContent=msg||'';if(state==='running'){track.style.display='block';var m=(msg||'').match(/(\d{1,3})\s*%/);var p=m?parseInt(m[1],10):4;var low=(msg||'').toLowerCase();if(!m&&low.indexOf('nacitam')>=0)p=5;else if(!m&&low.indexOf('poslouch')>=0)p=10;else if(!m&&low.indexOf('prepis')>=0)p=15;else if(!m&&low.indexOf('preklad')>=0)p=92;else if(!m&&low.indexOf('kontrol')>=0)p=96;fill.style.width=Math.max(2,Math.min(99,p))+'%';}
+ else if(state==='done'){track.style.display='block';fill.style.width='100%';setTimeout(function(){track.style.display='none';},1200);}
+ else{track.style.display='none';}}
 function autoLang(lang){var prev=window._autoLang;window._autoLang=lang;
- var modes=(lang==='cs')?['auto','en']:['auto','en','cs'];
+ var modes=(lang==='cs')?['auto','en']:['auto','ai','en','cs'];
  var key='_step_'+lang;var step=(window[key]||0);var mode=modes[step%modes.length];window[key]=step+1;
  var nm=(lang==='cs')?'ceske':'ukrajinske';
- var msg=(mode==='auto')?('Shanim a kontroluji '+nm+' titulky podle zvuku filmu (muze chvili trvat)...'):(mode==='en')?'Zkousim jiny zdroj: stahuji anglicke, prekladam a srovnavam...':'Zkousim jiny zdroj: stahuji ceske, prekladam a srovnavam...';
- var s=document.getElementById('substat');if(s){s.style.display='block';s.textContent=msg;}
+ var msg=(mode==='auto')?('Shanim a kontroluji '+nm+' titulky podle zvuku filmu (muze chvili trvat)...'):(mode==='ai')?'Vytvarim nove titulky primo z anglickeho zvuku (AI)...':(mode==='en')?'Zkousim jiny zdroj: stahuji anglicke, prekladam a srovnavam...':'Zkousim jiny zdroj: stahuji ceske, prekladam a srovnavam...';
+ var s=document.getElementById('substat');showSubStatus(msg,'running');
  fetch('/subauto?f='+encodeURIComponent(REL)+'&mode='+mode+'&lang='+lang,{cache:'no-store'})
  .then(function(r){return r.json();}).then(function(j){
   if(j&&j.already){window._autoLang=prev;window[key]=step;
-   if(s)s.textContent='U tohoto filmu prave probiha jina kontrola - pockej na jeji dokonceni.';}
+   showSubStatus('U tohoto filmu prave probiha jina kontrola - pockej na jeji dokonceni.','failed');}
   pollSub();
  }).catch(function(){window._autoLang=prev;window[key]=step;
-  if(s)s.textContent='Chyba spojeni - zkus stisknout znovu.';});}
+   showSubStatus('Chyba spojeni - zkus stisknout znovu.','failed');});}
+function aiLang(lang){window._autoLang=lang;
+ var nm=(lang==='cs')?'ceske':'ukrajinske';
+ var s=document.getElementById('substat');showSubStatus('AI posloucha anglicky zvuk a vytvari '+nm+' titulky...','running');
+ fetch('/subauto?f='+encodeURIComponent(REL)+'&mode=ai&lang='+lang,{cache:'no-store'})
+ .then(function(r){return r.json();}).then(function(j){
+  if(j&&j.already){showSubStatus('U tohoto filmu uz prave probiha jina titulkovaci uloha.','failed');}
+  pollSub();
+ }).catch(function(){showSubStatus('Chyba spojeni - zkus stisknout znovu.','failed');});}
 function autoUK(){autoLang('uk');}
 function selectLangTrack(lang){var needle=(lang==='cs')?'cesk':'ukrajin';
  fetch('/sublist?f='+encodeURIComponent(REL),{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
@@ -2826,11 +3007,11 @@ function syncVid(){window._autoLang=null;var s=document.getElementById('substat'
  if(s){s.style.display='block';s.textContent='Spoustim srovnani podle zvuku...';}
  fetch('/subsync?f='+encodeURIComponent(REL)+'&src='+encodeURIComponent(SUBRELS[idx]),{cache:'no-store'}).then(pollSub);}
 function pollSub(){fetch('/substatus?f='+encodeURIComponent(REL),{cache:'no-store'}).then(function(r){return r.json();}).then(function(st){
- var s=document.getElementById('substat');if(s)s.textContent=st.msg||'';
+ var s=document.getElementById('substat');showSubStatus(st.msg||'',st.state);
  if(st.state==='running'){setTimeout(pollSub,1500);}
- else if(st.state==='done'){if(s)s.textContent=st.msg||'';
+ else if(st.state==='done'){
    if(window._autoLang){var lg=st.lang||window._autoLang;window._autoLang=null;
-     if(window.pollSubs){if(s)s.textContent=(st.msg||'')+' Zapinam titulky...';
+      if(window.pollSubs){showSubStatus((st.msg||'')+' Zapinam titulky...','done');
        setTimeout(function(){selectLangTrack(lg);},500);setTimeout(function(){selectLangTrack(lg);},2000);}
      else{setTimeout(function(){location.reload();},1200);}
      return;}
@@ -2987,7 +3168,7 @@ class Handler(BaseHTTPRequestHandler):
         rel = qs.get("f", [""])[0]
         mode = qs.get("mode", ["auto"])[0]
         lang = qs.get("lang", ["uk"])[0]
-        if mode not in ("auto", "en", "cs"):
+        if mode not in ("auto", "ai", "en", "cs"):
             mode = "auto"
         if lang not in _AUTOLANG:
             lang = "uk"
@@ -3380,6 +3561,10 @@ video::cue{{background:rgba(0,0,0,.6);color:#fff;font-size:1.05em}}
   <button class="actbig" onclick="autoLang('uk')"><svg width="46" height="31" viewBox="0 0 46 31" style="flex:none"><clipPath id="ukr"><rect width="46" height="31" rx="5"/></clipPath><g clip-path="url(#ukr)"><rect width="46" height="15.5" fill="#005BBB"/><rect y="15.5" width="46" height="15.5" fill="#FFD500"/></g></svg><span>Ukrajinske<small>stahne, overi na zvuk, zapne</small></span></button>
   <button class="actbig cz" onclick="autoLang('cs')"><svg width="46" height="31" viewBox="0 0 46 31" style="flex:none"><clipPath id="czf"><rect width="46" height="31" rx="5"/></clipPath><g clip-path="url(#czf)"><rect width="46" height="15.5" fill="#fff"/><rect y="15.5" width="46" height="15.5" fill="#D7141A"/><polygon points="0,0 23,15.5 0,31" fill="#11457E"/></g></svg><span>Ceske<small>stahne, overi na zvuk, zapne</small></span></button>
   </div>
+  <div class="actrow" style="margin-top:8px">
+   <button class="shbtn" style="flex:1;height:auto;padding:11px 5px;border-color:#3578b9;background:#122a43" onclick="aiLang('uk')">&#129302; AI &#8594; ukrajinsky<small style="display:block;font-size:10px;font-weight:400;opacity:.72;margin-top:3px">primo z anglickeho zvuku</small></button>
+   <button class="shbtn" style="flex:1;height:auto;padding:11px 5px;border-color:#a35b68;background:#3a1720" onclick="aiLang('cs')">&#129302; AI &#8594; cesky<small style="display:block;font-size:10px;font-weight:400;opacity:.72;margin-top:3px">primo z anglickeho zvuku</small></button>
+  </div>
   <div class="substat" id="substat"></div>
   <div class="shiftrow">
     <span class="shlab">&#9201; Casovani titulku (za behu):</span>
@@ -3391,8 +3576,6 @@ video::cue{{background:rgba(0,0,0,.6);color:#fff;font-size:1.05em}}
     <button class="shbtn rst" onclick="resetShift()" title="vynulovat">&#8635;</button>
   </div>
   <div class="shhint">Kdyz titulky predbihaji, dej je &#8222;pozdeji&#8220; (&#9654;); kdyz se zpozduji, &#8222;driv&#8220; (&#9664;). Ulozi se k filmu.</div>
-  <button class="shbtn" style="width:100%;margin-top:10px;border-color:#7e5a2f" onclick="syncVid()">&#127919; Srovnat vybrany titulek podle zvuku (ffsubsync, experiment.)</button>
-  <div class="shhint">Automat podle zvuku filmu. U bezneho filmu s dialogy funguje; u arthouse/hudebnich muze minout. Vytvori novou stopu &#8222;(srovnane)&#8220; &ndash; puvodni zustane.</div>
   <details class="note"><summary>&#9432; Video se neprehrava? (MKV / HEVC)</summary>
   <div class="nb">Prohlizec neumi <b>MKV/HEVC</b> &ndash; otevri ve <b>VLC</b>:<br>
   <span class="url">http://{get_lan_ip()}:{PORT}{enc}</span></div></details>
