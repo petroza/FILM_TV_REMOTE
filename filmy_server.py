@@ -1903,8 +1903,11 @@ def translate_srt(srt, sl, tl):
 
 
 def _sub_set(rel, state, msg):
+    # zachovava extra klice (napr. "lang" z vlajkoveho automatu)
     with _subjobs_lock:
-        _subjobs[rel] = {"state": state, "msg": msg}
+        d = _subjobs.get(rel) or {}
+        d.update({"state": state, "msg": msg})
+        _subjobs[rel] = d
 
 
 def _safe_target(base, tag):
@@ -2445,13 +2448,20 @@ def _prune_foreign_subs(rel):
     own = sum(1 for f in entries if os.path.splitext(f)[1].lower() in VIDEO_EXT) == 1
     removed = [0]
 
+    known_foreign = set(_LANG_LABELS.values()) - set(_KEEP_LANG)
+
     def consider(fpath, fname, force):
         if not fname.lower().endswith(".srt"):
             return
         sbase = os.path.splitext(fname)[0].lower()
         if not (force or sbase.startswith(vname) or vname.startswith(sbase)):
             return
-        if any(k in _lang_label(fname, vname) for k in _KEEP_LANG):
+        lab = _lang_label(fname, vname)
+        if any(k in lab for k in _KEEP_LANG):
+            return
+        # mazat JEN pozitivne rozpoznane cizi jazyky; neznamy nazev NENI dukaz
+        # ciziho jazyka (mohl by to byt dobry titulek s nic nerikajicim nazvem)
+        if not any(fl in lab for fl in known_foreign):
             return
         rp = os.path.realpath(fpath)
         if rp.startswith(root + os.sep) and os.path.isfile(rp):
@@ -2540,6 +2550,7 @@ def _finish_lang(rel, msg, lang="uk"):
         msg += " KONTROLA OK: '%s' nasazena (%d titulku)." % (tgt["label"], ncue)
     except Exception:
         tgt = None
+        msg += " (Kontrolu po nasazeni se nepodarilo dokoncit - overte titulky rucne.)"
 
     # 3) auto-zapnuti na TV kdyz se tenhle film prave hraje (cast)
     try:
@@ -2614,13 +2625,20 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
             if not out:
                 _sub_set(rel, "failed", "Preklad se nepodaril (ani na 2. pokus).")
                 return
-            # srovnej i preklad na zvuk videa (spravne casovani)
+            # srovnej i preklad na zvuk videa (spravne casovani) + KONTROLA
+            # STABILITY: kdyz chce zvuk vystup posouvat dal, mereni lze ->
+            # nech puvodni casovani stazeneho zdroje (patri k releasu)
             _sub_set(rel, "running", "Kontroluji podle zvuku filmu...")
             aligned, off, scale, score = _ffsync_to_audio(vfull, out)
             extra = ""
             if aligned and "-->" in aligned:
-                out = aligned
-                extra = " (srovnano na zvuk, posun %+.1f s)" % (off or 0.0)
+                _sub_set(rel, "running", "Overuji stabilitu vysledku (kontrolni mereni)...")
+                _, off2, scale2, _ = _ffsync_to_audio(vfull, aligned)
+                if off2 is not None and abs(off2) <= 1.0 and abs((scale2 or 1.0) - 1.0) <= 0.005:
+                    out = aligned
+                    extra = " (srovnano na zvuk a potvrzeno kontrolnim merenim, posun %+.1f s)" % (off or 0.0)
+                else:
+                    extra = " (puvodni casovani zdroje - zvukove mereni u tohoto filmu neni spolehlive)"
             _write_lang_canonical(rel, base, out, lang)
             _finish_lang(rel, "Hotovo: " + cfg["name"] + " titulky (prelozene ze stazenych " + nm + ")" + extra + ".", lang)
             return
@@ -2630,6 +2648,7 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
         # Skore z ffsubsync = jak dobre titulek sedi na skutecny film -> vyber
         # variantu s nejvyssim skore (= nejspravnejsi casovani). Muze trvat i minutu.
         best = None  # (aligned_text, score, label, offset)
+        translated = translated_lbl = None  # preklad drz i kdyz zvukova kontrola nejde
         CONF_STOP = 8000
 
         def try_sync(text, label):
@@ -2640,7 +2659,9 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
             aligned, off, scale, score = _ffsync_to_audio(vfull, text)
             if aligned and "-->" in aligned and score is not None:
                 if best is None or score > best[1]:
-                    best = (aligned, score, label, off or 0.0)
+                    # drz i PUVODNI text - kdyz se zvukove zarovnani ukaze
+                    # jako nestabilni, vratime se k puvodnimu casovani
+                    best = (aligned, score, label, off or 0.0, text)
                 return score >= CONF_STOP
             return False
 
@@ -2683,13 +2704,56 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                         break
             if src:
                 _sub_set(rel, "running", "Prekladam do " + cfg["gen"] + " a kontroluji podle zvuku...")
-                try_sync(_translate_retry(src, sl, cfg["tr"]), lbl)
+                translated = _translate_retry(src, sl, cfg["tr"])
+                translated_lbl = lbl
+                try_sync(translated, lbl)
 
         # ---- VYSLEDEK ----
         if best is not None:
-            content = best[0]
-            conf = "vysoka" if best[1] >= 1500 else ("stredni" if best[1] >= 300 else "NIZKA - zkontroluj")
-            note = "%s, srovnano na zvuk (jistota: %s, posun %+.1f s)" % (best[2], conf, best[3])
+            # KONTROLA STABILITY: spravne zarovnani je idempotentni - kdyz
+            # srovnany vystup zmerime znovu, musi vyjit posun ~0. Kdyz zvuk
+            # chce vystup DAL posouvat (hudba/malo dialogu mate VAD), je jeho
+            # mereni na tomto filmu nespolehlive a NESMI se pouzit, i kdyby
+            # melo vysoke skore (zjisteno na Short Treks: +80s dokola).
+            _sub_set(rel, "running", "Overuji stabilitu vysledku (kontrolni mereni)...")
+            _, off2, scale2, _ = _ffsync_to_audio(vfull, best[0])
+            stable = (off2 is not None and abs(off2) <= 1.0
+                      and abs((scale2 or 1.0) - 1.0) <= 0.005)
+            if stable:
+                content = best[0]
+                conf = "vysoka" if best[1] >= 1500 else ("stredni" if best[1] >= 300 else "NIZKA - zkontroluj")
+                note = "%s, srovnano na zvuk a potvrzeno kontrolnim merenim (jistota: %s, posun %+.1f s)" % (best[2], conf, best[3])
+            elif off2 is None:
+                # kontrolni mereni se nepovedlo spustit - vysledek nech, ale rekni to
+                content = best[0]
+                note = "%s, srovnano na zvuk (kontrolni mereni nedobehlo)" % best[2]
+            else:
+                # zvukove mereni na tomto filmu LZE (chce vystup dal posouvat) ->
+                # nejjistejsi je preklad mistni reference s JEJIM puvodnim casovanim
+                ref = _pick_translate_source(rel, lang)
+                ref_text = clean_srt(_read_local_srt(ref[0]) or "") if ref else ""
+                content = None
+                if "-->" in ref_text:
+                    # a) zkus PUVODNI text kandidata srovnat podle mistnich titulku
+                    #    (konstantni posun; zachova nativni kvalitu textu).
+                    #    PRISNY prah: musi sedet >=60 % titulku, jinak je kandidat
+                    #    deformovany (spatne meritko) a posun ho nespravi.
+                    _sub_set(rel, "running", "Zvukove mereni je u tohoto filmu nestabilni - srovnavam podle mistnich titulku...")
+                    al = _align_to_reference(best[4], ref_text)
+                    need = 0.6 * min(len(_srt_starts(best[4])), len(_srt_starts(ref_text)))
+                    if al and al[3] >= need:
+                        content = al[0]
+                        note = "%s, srovnano podle mistnich titulku %s (zvukove mereni u tohoto filmu neni spolehlive; posun %+.1f s, shoda %d titulku)" % (best[2], ref[1], al[2], al[3])
+                    else:
+                        # b) preklad reference - zdedi jeji casovani 1:1
+                        _sub_set(rel, "running", "Prekladam mistni titulky s puvodnim casovanim...")
+                        tr = translated if (translated and "-->" in translated) else _translate_retry(ref_text, ref[2], cfg["tr"])
+                        if tr and "-->" in tr:
+                            content = tr
+                            note = "preklad z: %s s puvodnim casovanim (zvukove mereni u tohoto filmu neni spolehlive)" % ref[1]
+                if content is None:
+                    content = best[4]  # puvodni casovani kandidata (bez zvukoveho posunu)
+                    note = "%s s puvodnim casovanim (zvukove mereni u tohoto filmu neni spolehlive - pripadne dolad rucne)" % best[2]
         else:
             # ffsubsync selhal na vsem -> DRUHA KONTROLNI METODA: zarovnani
             # podle mistnich titulku jineho jazyka (kdyz jsou); az pak bez overeni
@@ -2699,10 +2763,16 @@ def _subauto_worker(rel, mode="auto", lang="uk"):
                 if t and "-->" in t:
                     content = t
                     break
-            if not content:
+            if not content and translated and "-->" in translated:
+                # uspesny preklad NEzahazovat - casovani zdedil ze zdroje
+                content = translated
+                note = "%s, bez zvukove kontroly" % translated_lbl
+            elif not content:
                 dl = opensub_best_srt(imdbid, title, year, cfg["lang3"])
                 content = dl if (dl and "-->" in dl) else None
-            note = "bez kontroly na zvuk (nepodarilo se overit)"
+                note = "bez kontroly na zvuk (nepodarilo se overit)"
+            else:
+                note = "bez kontroly na zvuk (nepodarilo se overit)"
             if content:
                 ref = _pick_translate_source(rel, lang)
                 ref_text = clean_srt(_read_local_srt(ref[0]) or "") if ref else ""
@@ -2735,7 +2805,8 @@ function autoLang(lang){var prev=window._autoLang;window._autoLang=lang;
   if(j&&j.already){window._autoLang=prev;window[key]=step;
    if(s)s.textContent='U tohoto filmu prave probiha jina kontrola - pockej na jeji dokonceni.';}
   pollSub();
- }).catch(function(){pollSub();});}
+ }).catch(function(){window._autoLang=prev;window[key]=step;
+  if(s)s.textContent='Chyba spojeni - zkus stisknout znovu.';});}
 function autoUK(){autoLang('uk');}
 function selectLangTrack(lang){var needle=(lang==='cs')?'cesk':'ukrajin';
  fetch('/sublist?f='+encodeURIComponent(REL),{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
@@ -2758,10 +2829,10 @@ function pollSub(){fetch('/substatus?f='+encodeURIComponent(REL),{cache:'no-stor
  var s=document.getElementById('substat');if(s)s.textContent=st.msg||'';
  if(st.state==='running'){setTimeout(pollSub,1500);}
  else if(st.state==='done'){if(s)s.textContent=st.msg||'';
-   if(window._autoLang){var lg=window._autoLang;window._autoLang=null;
+   if(window._autoLang){var lg=st.lang||window._autoLang;window._autoLang=null;
      if(window.pollSubs){if(s)s.textContent=(st.msg||'')+' Zapinam titulky...';
        setTimeout(function(){selectLangTrack(lg);},500);setTimeout(function(){selectLangTrack(lg);},2000);}
-     else{fetch('/cast/cmd?a=resub&lang='+lg,{cache:'no-store'}).catch(function(){}).then(function(){setTimeout(function(){location.reload();},1000);});}
+     else{setTimeout(function(){location.reload();},1200);}
      return;}
    if(window.pollSubs){pollSubs();}
    else{fetch('/cast/cmd?a=resub',{cache:'no-store'}).catch(function(){}).then(function(){setTimeout(function(){location.reload();},1000);});}}
@@ -2927,9 +2998,13 @@ class Handler(BaseHTTPRequestHandler):
             cur = _subjobs.get(rel)
             running = bool(cur and cur.get("state") == "running")
             if not running:
-                _subjobs[rel] = {"state": "running", "msg": "Spoustim..."}
+                _subjobs[rel] = {"state": "running", "msg": "Spoustim...", "lang": lang}
         if not running:
-            threading.Thread(target=_subauto_worker, args=(rel, mode, lang), daemon=True).start()
+            try:
+                threading.Thread(target=_subauto_worker, args=(rel, mode, lang), daemon=True).start()
+            except Exception as e:
+                # start vlakna selhal -> NEsmi zustat vecne "running" (film by se zamkl)
+                _sub_set(rel, "failed", "Nepodarilo se spustit: " + str(e)[:80])
         self.send_json({"ok": True, "already": running})
 
     # ---------- Dohledani + preklad titulku ----------
@@ -3005,19 +3080,32 @@ class Handler(BaseHTTPRequestHandler):
     def cast_cmd(self, query):
         qs = urllib.parse.parse_qs(query)
         a = qs.get("a", [""])[0]
+        # sken titulku = IO na disku -> delej PRED zamkem, at nezdrzi poll TV
+        pre_rel = pre_subs = None
+        if a == "play":
+            pre_rel = qs.get("f", [""])[0]
+            if pre_rel and safe_path(pre_rel):
+                pre_subs = [{"u": vtt_url(s["rel"]), "l": s["label"]}
+                            for s in find_subtitles(pre_rel)]
+            else:
+                pre_rel = None
+        elif a == "resub":
+            with _cast_lock:
+                pre_rel = _cast.get("rel")
+            if pre_rel:
+                pre_subs = [{"u": vtt_url(s["rel"]), "l": s["label"]}
+                            for s in find_subtitles(pre_rel)]
         with _cast_lock:
             if a == "play":
-                rel = qs.get("f", [""])[0]
-                if rel and safe_path(rel):
+                if pre_rel:
                     try:
                         sub = int(qs.get("sub", ["-1"])[0])
                     except ValueError:
                         sub = -1
-                    _cast["rel"] = rel
-                    _cast["url"] = "/media/" + urllib.parse.quote(rel)
-                    _cast["title"] = clean_title(rel)[0]
-                    _cast["subs"] = [{"u": vtt_url(s["rel"]),
-                                      "l": s["label"]} for s in find_subtitles(rel)]
+                    _cast["rel"] = pre_rel
+                    _cast["url"] = "/media/" + urllib.parse.quote(pre_rel)
+                    _cast["title"] = clean_title(pre_rel)[0]
+                    _cast["subs"] = pre_subs
                     _cast["sub"] = sub
                     _cast["paused"] = False
                     _cast["seek"] = 0.0
@@ -3056,19 +3144,33 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     pass
             elif a == "resub":
-                # obnov seznam titulku na TV (napr. po vlajkovem automatu vznikla nova
-                # stopa) a rovnou ZAPNI cilovy jazyk (?lang=uk/cs, prednostne (srovnane))
-                if _cast.get("rel"):
-                    want = _AUTOLANG.get(qs.get("lang", ["uk"])[0], _AUTOLANG["uk"])["label"]
-                    subs2 = find_subtitles(_cast["rel"])
-                    _cast["subs"] = [{"u": vtt_url(s["rel"]), "l": s["label"]} for s in subs2]
-                    uki = next((i for i, s in enumerate(subs2)
-                                if want in s["label"] and "srovn" in s["label"].lower()), None)
-                    if uki is None:
-                        uki = next((i for i, s in enumerate(subs2)
-                                    if want in s["label"]), None)
-                    if uki is not None:
-                        _cast["sub"] = uki
+                # obnov seznam titulku na TV. S ?lang=uk/cs ZAPNI dany jazyk
+                # (prednostne srovnane); BEZ lang ZACHOVEJ aktualni vyber -
+                # nic nevnucovat (drive to vzdy prepnulo na ukrajinske).
+                # Jen kdyz se film mezitim nezmenil (pre_subs patri pre_rel).
+                if pre_rel and _cast.get("rel") == pre_rel:
+                    prev_lab = None
+                    if 0 <= _cast.get("sub", -1) < len(_cast.get("subs") or []):
+                        prev_lab = _cast["subs"][_cast["sub"]]["l"]
+                    _cast["subs"] = pre_subs
+                    lang_q = qs.get("lang", [""])[0]
+                    if lang_q in _AUTOLANG:
+                        want = _AUTOLANG[lang_q]["label"]
+                        idx = next((i for i, s in enumerate(pre_subs)
+                                    if want in s["l"] and "srovn" in s["l"].lower()), None)
+                        if idx is None:
+                            idx = next((i for i, s in enumerate(pre_subs)
+                                        if want in s["l"]), None)
+                        if idx is not None:
+                            _cast["sub"] = idx
+                    else:
+                        if prev_lab is not None:
+                            idx = next((i for i, s in enumerate(pre_subs)
+                                        if s["l"] == prev_lab), None)
+                            if idx is not None:
+                                _cast["sub"] = idx
+                        if _cast.get("sub", -1) >= len(pre_subs):
+                            _cast["sub"] = -1
                     _cast["subsVer"] += 1
                     _cast["ver"] += 1
         _save_cast()  # kazda zmena "co se hraje" se hned ulozi (prezije restart)
